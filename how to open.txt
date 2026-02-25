@@ -1,3 +1,0 @@
-D:
-cd "D:\Save the Children\01 FMFA\Posmishka\% of children who demonstrate improved mental health andor psychosocial wellbeing (MHPSS)\py test"
-py -m streamlit run app.py 
