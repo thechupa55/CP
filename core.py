@@ -188,6 +188,20 @@ def structured_monthly_first_time_core(
         .astype(int)
         .reset_index()
     )
+    if "boy" not in monthly_by_program_gender_pivot.columns:
+        monthly_by_program_gender_pivot["boy"] = 0
+    if "girl" not in monthly_by_program_gender_pivot.columns:
+        monthly_by_program_gender_pivot["girl"] = 0
+    if "unknown" not in monthly_by_program_gender_pivot.columns:
+        monthly_by_program_gender_pivot["unknown"] = 0
+    monthly_by_program_gender_pivot["Total"] = (
+        monthly_by_program_gender_pivot["boy"]
+        + monthly_by_program_gender_pivot["girl"]
+        + monthly_by_program_gender_pivot["unknown"]
+    )
+    monthly_by_program_gender_pivot = monthly_by_program_gender_pivot[
+        ["Month", "Program", "boy", "girl", "Total", "unknown"]
+    ]
 
     mg = pd.DataFrame(
         {
@@ -200,6 +214,20 @@ def structured_monthly_first_time_core(
         monthly_by_gender_long.pivot(index="Month", columns="Gender", values="Count")
         .fillna(0).astype(int).reset_index()
     )
+    if "boy" not in monthly_by_gender_pivot.columns:
+        monthly_by_gender_pivot["boy"] = 0
+    if "girl" not in monthly_by_gender_pivot.columns:
+        monthly_by_gender_pivot["girl"] = 0
+    if "unknown" not in monthly_by_gender_pivot.columns:
+        monthly_by_gender_pivot["unknown"] = 0
+    monthly_by_gender_pivot["Total"] = (
+        monthly_by_gender_pivot["boy"]
+        + monthly_by_gender_pivot["girl"]
+        + monthly_by_gender_pivot["unknown"]
+    )
+    monthly_by_gender_pivot = monthly_by_gender_pivot[
+        ["Month", "boy", "girl", "Total", "unknown"]
+    ]
 
     missing_date_count = int(
         ((team_done & team_dt.isna()) |
@@ -257,6 +285,249 @@ def cp_services_indicator_core(
     total_sessions = team_n + heart_n + cyr_n + ismf_n + sf_n + rec_n + infedu_n + eore_n
     indicator_mask = total_sessions >= 2
     return total_sessions, indicator_mask
+
+
+def cp_services_indicator_monthly_core(
+    df: pd.DataFrame,
+    use_id: bool,
+    id_col: str,
+    team_s_col: str,
+    heart_s_col: str,
+    cyr_s_col: str,
+    ismf_s_col: str,
+    sf_s_col: str,
+    rec_s_col: str,
+    infedu_s_col: str,
+    eore_s_col: str,
+    date_col: str,
+    gender_col: str,
+):
+    row_total = (
+        to_num(df[team_s_col]) + to_num(df[heart_s_col]) + to_num(df[cyr_s_col]) + to_num(df[ismf_s_col]) +
+        to_num(df[sf_s_col]) + to_num(df[rec_s_col]) + to_num(df[infedu_s_col]) + to_num(df[eore_s_col])
+    )
+    row_dt = parse_mixed_date(df[date_col])
+    row_gender = df[gender_col].astype("string").str.strip().str.lower()
+    row_gender = row_gender.where(row_gender.isin(["boy", "girl"]), "unknown")
+
+    if use_id:
+        total_sessions, indicator_mask = cp_services_indicator_core(
+            df,
+            use_id,
+            id_col,
+            team_s_col,
+            heart_s_col,
+            cyr_s_col,
+            ismf_s_col,
+            sf_s_col,
+            rec_s_col,
+            infedu_s_col,
+            eore_s_col,
+        )
+        indicator_ids = total_sessions[indicator_mask].index
+
+        tmp = pd.DataFrame(
+            {
+                "_id": df[id_col],
+                "_row_index": df.index,
+                "_row_total": row_total,
+                "_dt": row_dt,
+                "_gender": row_gender,
+            }
+        )
+        tmp = tmp[tmp["_id"].isin(indicator_ids)].copy()
+        tmp = tmp.sort_values(["_id", "_dt", "_row_index"], na_position="last")
+        tmp["_cum_total"] = tmp.groupby("_id")["_row_total"].cumsum()
+
+        reached = tmp[tmp["_cum_total"] >= 2].copy()
+        first_reached = reached.groupby("_id", as_index=True).first()
+
+        first_dt = first_reached["_dt"]
+        first_gender = first_reached["_gender"]
+        first_row_index = first_reached["_row_index"].astype("Int64")
+        first_total_sessions = total_sessions.loc[first_reached.index]
+    else:
+        total_sessions = row_total
+        indicator_mask = total_sessions >= 2
+
+        first_dt = row_dt.where(indicator_mask)
+        first_gender = row_gender.where(indicator_mask)
+        first_row_index = first_dt[first_dt.notna()].index.to_series().astype("Int64")
+        first_total_sessions = total_sessions.loc[first_dt.dropna().index]
+
+    monthly_total = (
+        first_dt.dropna().dt.to_period("M").value_counts().sort_index()
+        .rename_axis("Month").reset_index(name="CP indicator achievements")
+    )
+
+    mg = pd.DataFrame(
+        {
+            "Month": first_dt.dropna().dt.to_period("M").astype(str),
+            "Gender": first_gender.loc[first_dt.dropna().index].astype("string"),
+        }
+    )
+    monthly_by_gender_long = mg.value_counts().reset_index(name="Count").sort_values(["Month", "Gender"])
+    monthly_by_gender_pivot = (
+        monthly_by_gender_long.pivot(index="Month", columns="Gender", values="Count")
+        .fillna(0).astype(int).reset_index()
+    )
+    if "boy" not in monthly_by_gender_pivot.columns:
+        monthly_by_gender_pivot["boy"] = 0
+    if "girl" not in monthly_by_gender_pivot.columns:
+        monthly_by_gender_pivot["girl"] = 0
+    if "unknown" not in monthly_by_gender_pivot.columns:
+        monthly_by_gender_pivot["unknown"] = 0
+    monthly_by_gender_pivot["Total"] = (
+        monthly_by_gender_pivot["boy"]
+        + monthly_by_gender_pivot["girl"]
+        + monthly_by_gender_pivot["unknown"]
+    )
+    monthly_by_gender_pivot = monthly_by_gender_pivot[
+        ["Month", "boy", "girl", "Total", "unknown"]
+    ]
+
+    first_meta = pd.DataFrame(
+        {
+            "_row_index": first_row_index,
+            "First indicator date": first_dt.loc[first_row_index.index if use_id else first_row_index.index],
+            "Gender": first_gender.loc[first_row_index.index if use_id else first_row_index.index],
+            "Total sessions": first_total_sessions,
+        }
+    ).dropna(subset=["_row_index"])
+
+    missing_date_count = int(indicator_mask.sum() - first_dt.dropna().shape[0])
+
+    return {
+        "first_dt": first_dt,
+        "first_gender": first_gender,
+        "first_row_index": first_row_index,
+        "first_meta": first_meta,
+        "monthly_total": monthly_total,
+        "monthly_by_gender_pivot": monthly_by_gender_pivot,
+        "missing_date_count": missing_date_count,
+        "indicator_total": int(indicator_mask.sum()),
+    }
+
+
+def cp_services_indicator_adult_core(
+    df: pd.DataFrame,
+    use_id: bool,
+    id_col: str,
+    sf_s_col: str,
+    unstructured_s_col: str,
+):
+    sf_n = to_num(df[sf_s_col])
+    unstructured_n = to_num(df[unstructured_s_col])
+
+    if use_id:
+        sf_n = sf_n.groupby(df[id_col]).sum()
+        unstructured_n = unstructured_n.groupby(df[id_col]).sum()
+
+    total_sessions = sf_n + unstructured_n
+    indicator_mask = total_sessions >= 2
+    return total_sessions, indicator_mask
+
+
+def cp_services_indicator_adult_monthly_core(
+    df: pd.DataFrame,
+    use_id: bool,
+    id_col: str,
+    sf_s_col: str,
+    unstructured_s_col: str,
+    date_col: str,
+    gender_col: str,
+):
+    row_total = to_num(df[sf_s_col]) + to_num(df[unstructured_s_col])
+    row_dt = parse_mixed_date(df[date_col])
+    row_gender = df[gender_col].astype("string").str.strip().str.lower()
+    row_gender = row_gender.where(row_gender.isin(["male", "female"]), "unknown")
+
+    if use_id:
+        total_sessions, indicator_mask = cp_services_indicator_adult_core(
+            df, use_id, id_col, sf_s_col, unstructured_s_col
+        )
+        indicator_ids = total_sessions[indicator_mask].index
+
+        tmp = pd.DataFrame(
+            {
+                "_id": df[id_col],
+                "_row_index": df.index,
+                "_row_total": row_total,
+                "_dt": row_dt,
+                "_gender": row_gender,
+            }
+        )
+        tmp = tmp[tmp["_id"].isin(indicator_ids)].copy()
+        tmp = tmp.sort_values(["_id", "_dt", "_row_index"], na_position="last")
+        tmp["_cum_total"] = tmp.groupby("_id")["_row_total"].cumsum()
+
+        reached = tmp[tmp["_cum_total"] >= 2].copy()
+        first_reached = reached.groupby("_id", as_index=True).first()
+
+        first_dt = first_reached["_dt"]
+        first_gender = first_reached["_gender"]
+        first_row_index = first_reached["_row_index"].astype("Int64")
+        first_total_sessions = total_sessions.loc[first_reached.index]
+    else:
+        total_sessions = row_total
+        indicator_mask = total_sessions >= 2
+
+        first_dt = row_dt.where(indicator_mask)
+        first_gender = row_gender.where(indicator_mask)
+        first_row_index = first_dt[first_dt.notna()].index.to_series().astype("Int64")
+        first_total_sessions = total_sessions.loc[first_dt.dropna().index]
+
+    monthly_total = (
+        first_dt.dropna().dt.to_period("M").value_counts().sort_index()
+        .rename_axis("Month").reset_index(name="Adult CP indicator achievements")
+    )
+
+    mg = pd.DataFrame(
+        {
+            "Month": first_dt.dropna().dt.to_period("M").astype(str),
+            "Gender": first_gender.loc[first_dt.dropna().index].astype("string"),
+        }
+    )
+    monthly_by_gender_long = mg.value_counts().reset_index(name="Count").sort_values(["Month", "Gender"])
+    monthly_by_gender_pivot = (
+        monthly_by_gender_long.pivot(index="Month", columns="Gender", values="Count")
+        .fillna(0).astype(int).reset_index()
+    )
+    if "female" not in monthly_by_gender_pivot.columns:
+        monthly_by_gender_pivot["female"] = 0
+    if "male" not in monthly_by_gender_pivot.columns:
+        monthly_by_gender_pivot["male"] = 0
+    if "unknown" not in monthly_by_gender_pivot.columns:
+        monthly_by_gender_pivot["unknown"] = 0
+    monthly_by_gender_pivot["Total"] = (
+        monthly_by_gender_pivot["female"]
+        + monthly_by_gender_pivot["male"]
+        + monthly_by_gender_pivot["unknown"]
+    )
+    monthly_by_gender_pivot = monthly_by_gender_pivot[
+        ["Month", "female", "male", "Total", "unknown"]
+    ]
+
+    first_meta = pd.DataFrame(
+        {
+            "_row_index": first_row_index,
+            "First indicator date": first_dt.loc[first_row_index.index if use_id else first_row_index.index],
+            "Gender": first_gender.loc[first_row_index.index if use_id else first_row_index.index],
+            "Total sessions": first_total_sessions,
+        }
+    ).dropna(subset=["_row_index"])
+
+    missing_date_count = int(indicator_mask.sum() - first_dt.dropna().shape[0])
+
+    return {
+        "first_dt": first_dt,
+        "first_meta": first_meta,
+        "monthly_total": monthly_total,
+        "monthly_by_gender_pivot": monthly_by_gender_pivot,
+        "missing_date_count": missing_date_count,
+        "indicator_total": int(indicator_mask.sum()),
+        "indicator_total_people": int(len(total_sessions)),
+    }
 
 
 def _normalize_geo_series(series: pd.Series) -> pd.Series:
@@ -456,6 +727,84 @@ def safe_families_monthly_gender_core(
         monthly_gender.pivot(index="Month", columns="Gender", values="Count")
         .fillna(0).astype(int).reset_index()
     )
+    if "boy" not in monthly_gender_pivot.columns:
+        monthly_gender_pivot["boy"] = 0
+    if "girl" not in monthly_gender_pivot.columns:
+        monthly_gender_pivot["girl"] = 0
+    if "unknown" not in monthly_gender_pivot.columns:
+        monthly_gender_pivot["unknown"] = 0
+    monthly_gender_pivot["Total"] = (
+        monthly_gender_pivot["boy"]
+        + monthly_gender_pivot["girl"]
+        + monthly_gender_pivot["unknown"]
+    )
+    monthly_gender_pivot = monthly_gender_pivot[
+        ["Month", "boy", "girl", "Total", "unknown"]
+    ]
+    missing_dates = int((sf_done & sf_dt.isna()).sum())
+
+    safe_families_df = pd.DataFrame(
+        [
+            ["Completed column used", sf_completed_col],
+            ["Date column used", sf_date_col],
+            ["Gender column used", gender_col],
+            ["Completed total", completed_total],
+            ["Completed=yes but date missing", missing_dates],
+        ],
+        columns=["Metric", "Value"],
+    )
+
+    return monthly_gender_pivot, safe_families_df, completed_total, missing_dates
+
+
+def safe_families_monthly_gender_adult_core(
+    df: pd.DataFrame,
+    use_id: bool,
+    id_col: str,
+    sf_completed_col: str,
+    sf_date_col: str,
+    gender_col: str,
+):
+    sf_done = to_bool_series(df[sf_completed_col])
+    sf_dt = parse_mixed_date(df[sf_date_col]).where(sf_done)
+
+    g = df[gender_col].astype("string").str.strip().str.lower()
+    g = g.where(g.isin(["male", "female"]), "unknown")
+
+    if use_id:
+        tmp = pd.DataFrame({"_id": df[id_col], "_sf_dt": sf_dt, "_gender": g}).dropna(subset=["_sf_dt"])
+        tmp = tmp.sort_values(["_id", "_sf_dt"])
+        first = tmp.groupby("_id").first()
+        sf_dt_in = first["_sf_dt"]
+        g_in = first["_gender"].astype("string").where(first["_gender"].isin(["male", "female"]), "unknown")
+        completed_total = int(len(sf_dt_in))
+    else:
+        sf_dt_in = sf_dt.dropna()
+        g_in = g.loc[sf_dt_in.index].astype("string").where(g.loc[sf_dt_in.index].isin(["male", "female"]), "unknown")
+        completed_total = int(sf_done.sum())
+
+    monthly_gender = (
+        pd.DataFrame({"Month": sf_dt_in.dt.to_period("M").astype(str), "Gender": g_in})
+        .value_counts().reset_index(name="Count").sort_values(["Month", "Gender"])
+    )
+    monthly_gender_pivot = (
+        monthly_gender.pivot(index="Month", columns="Gender", values="Count")
+        .fillna(0).astype(int).reset_index()
+    )
+    if "female" not in monthly_gender_pivot.columns:
+        monthly_gender_pivot["female"] = 0
+    if "male" not in monthly_gender_pivot.columns:
+        monthly_gender_pivot["male"] = 0
+    if "unknown" not in monthly_gender_pivot.columns:
+        monthly_gender_pivot["unknown"] = 0
+    monthly_gender_pivot["Total"] = (
+        monthly_gender_pivot["female"]
+        + monthly_gender_pivot["male"]
+        + monthly_gender_pivot["unknown"]
+    )
+    monthly_gender_pivot = monthly_gender_pivot[
+        ["Month", "female", "male", "Total", "unknown"]
+    ]
     missing_dates = int((sf_done & sf_dt.isna()).sum())
 
     safe_families_df = pd.DataFrame(

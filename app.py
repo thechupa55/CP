@@ -12,9 +12,13 @@ from config import (
     STRUCTURED_DEFAULTS,
 )
 from core import (
+    cp_services_indicator_adult_core,
+    cp_services_indicator_adult_monthly_core,
     cp_services_indicator_core,
+    cp_services_indicator_monthly_core,
     disability_gender_core,
     geography_analysis_core,
+    safe_families_monthly_gender_adult_core,
     safe_families_monthly_gender_core,
     structured_core,
     structured_monthly_first_time_core,
@@ -70,6 +74,26 @@ def _resolve_col_name(options: list[str], target_name: str) -> str | None:
     for col in options:
         if target_canon and target_canon in _canon_col(col):
             return col
+    return None
+
+
+def _excel_letter_to_zero_based(letter: str) -> int:
+    n = 0
+    for ch in letter.strip().upper():
+        if "A" <= ch <= "Z":
+            n = n * 26 + (ord(ch) - ord("A") + 1)
+    return max(n - 1, 0)
+
+
+def _resolve_with_aliases(options: list[str], aliases: list[str], excel_letter_fallback: str | None = None) -> str | None:
+    for alias in aliases:
+        found = _resolve_col_name(options, alias)
+        if found is not None:
+            return found
+    if excel_letter_fallback:
+        idx = _excel_letter_to_zero_based(excel_letter_fallback)
+        if 0 <= idx < len(options):
+            return options[idx]
     return None
 
 
@@ -157,6 +181,50 @@ def render_header(theme_mode: str):
         st.title("MEAL Counter Tool v1")
 
 
+def render_indicator_banner(label: str, value: int, theme_mode: str):
+    if theme_mode == "Save the Children corporate":
+        bg = "linear-gradient(135deg, #DA291C 0%, #b52219 100%)"
+        border = "1px solid rgba(218, 41, 28, 0.45)"
+        label_color = "#ffe4e1"
+        value_color = "#ffffff"
+        shadow = "0 10px 24px rgba(218, 41, 28, 0.25)"
+    else:
+        bg = "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)"
+        border = "1px solid rgba(15, 23, 42, 0.45)"
+        label_color = "#dbeafe"
+        value_color = "#ffffff"
+        shadow = "0 10px 24px rgba(15, 23, 42, 0.24)"
+
+    st.markdown(
+        f"""
+        <div style="margin: 8px 0 14px 0; padding: 14px 16px; border-radius: 14px; background: {bg}; border: {border}; box-shadow: {shadow};">
+            <div style="font-size: 0.88rem; color: {label_color}; font-weight: 600; line-height: 1.35;">
+                {label}
+            </div>
+            <div style="font-size: 2rem; color: {value_color}; font-weight: 900; margin-top: 4px; line-height: 1;">
+                {value:,}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _get_selected_col(options: list[str], state_key: str, default_name: str) -> str:
+    selected = st.session_state.get(state_key)
+    if isinstance(selected, str) and selected in options:
+        return selected
+    idx = _find_default_index(options, default_name)
+    return options[idx] if options else ""
+
+
+def _get_selected_text(state_key: str, default_value: str) -> str:
+    selected = st.session_state.get(state_key)
+    if isinstance(selected, str) and selected.strip():
+        return selected.strip()
+    return default_value
+
+
 def main():
     # =============================
     # Page
@@ -193,33 +261,62 @@ def main():
         st.stop()
     
     with st.sidebar:
-        sheet = st.selectbox("Select sheet", sheet_names, key="sidebar_sheet")
+        sheet = st.selectbox(
+            "Child sheet",
+            sheet_names,
+            index=_find_default_index(sheet_names, "Child Info"),
+            key="sidebar_sheet",
+        )
+        adult_sheet = st.selectbox(
+            "Adult sheet",
+            sheet_names,
+            index=_find_default_index(sheet_names, "Adult Info"),
+            key="sidebar_adult_sheet",
+        )
     
     try:
         df = read_excel_sheet(file_bytes, sheet)
     except Exception as e:
-        st.error(f"Cannot read selected sheet: {e}")
+        st.error(f"Cannot read selected child sheet: {e}")
         st.stop()
-    
+
+    try:
+        adult_df = read_excel_sheet(file_bytes, adult_sheet)
+    except Exception as e:
+        st.error(f"Cannot read selected adult sheet: {e}")
+        st.stop()
+
     df.columns = df.columns.astype(str).str.strip()
     df.columns = make_unique_columns(df.columns)
-    
+    adult_df.columns = adult_df.columns.astype(str).str.strip()
+    adult_df.columns = make_unique_columns(adult_df.columns)
+
     with st.sidebar:
-        st.caption(f"Rows: {len(df):,} | Columns: {len(df.columns):,}")
+        st.caption(f"Child rows: {len(df):,} | Columns: {len(df.columns):,}")
+        st.caption(f"Adult rows: {len(adult_df):,} | Columns: {len(adult_df.columns):,}")
         id_col = st.selectbox("Optional: Unique Child ID column", ["(none)"] + df.columns.tolist(), key="sidebar_id")
         use_id = id_col != "(none)"
         if use_id and df[id_col].isna().any():
             st.warning("Some rows have missing Child ID. Those rows are excluded from ID-based groupings.")
+        adult_id_col = st.selectbox(
+            "Optional: Unique Adult ID column",
+            ["(none)"] + adult_df.columns.tolist(),
+            key="sidebar_adult_id",
+        )
+        use_adult_id = adult_id_col != "(none)"
+        if use_adult_id and adult_df[adult_id_col].isna().any():
+            st.warning("Some rows have missing Adult ID. Those rows are excluded from ID-based groupings.")
     
     # =============================
     # Tabs
     # =============================
-    tab_preview, tab_struct, tab_struct_month, tab_cp, tab_sf_month, tab_geo, tab_disability, tab_downloads = st.tabs(
+    tab_preview, tab_indicators, tab_cp, tab_struct, tab_struct_month, tab_sf_month, tab_geo, tab_disability, tab_downloads = st.tabs(
         [
             "Preview",
+            "Indicators",
+            "CP Services Indicator",
             "Structured",
             "Structured Monthly",
-            "CP Services Indicator",
             "Safe Families Monthly",
             "Geography",
             "Disability",
@@ -231,8 +328,122 @@ def main():
     # Preview
     # -----------------------------
     with tab_preview:
-        st.subheader("Data preview")
+        st.subheader("Data preview - Child Info")
         st.dataframe(df.head(int(preview_rows)), use_container_width=True)
+        st.subheader("Data preview - Adult Info")
+        st.dataframe(adult_df.head(int(preview_rows)), use_container_width=True)
+
+    # -----------------------------
+    # Indicators
+    # -----------------------------
+    with tab_indicators:
+        st.subheader("Indicators")
+        child_cols = df.columns.tolist()
+        adult_cols = adult_df.columns.tolist()
+
+        structured_programs = [
+            (
+                _get_selected_text(f"p1_name_ui__{sheet}", STRUCTURED_DEFAULTS["programs"][0][0]),
+                _get_selected_col(child_cols, f"p1_col_ui__{sheet}", STRUCTURED_DEFAULTS["programs"][0][1]),
+            ),
+            (
+                _get_selected_text(f"p2_name_ui__{sheet}", STRUCTURED_DEFAULTS["programs"][1][0]),
+                _get_selected_col(child_cols, f"p2_col_ui__{sheet}", STRUCTURED_DEFAULTS["programs"][1][1]),
+            ),
+            (
+                _get_selected_text(f"p3_name_ui__{sheet}", STRUCTURED_DEFAULTS["programs"][2][0]),
+                _get_selected_col(child_cols, f"p3_col_ui__{sheet}", STRUCTURED_DEFAULTS["programs"][2][1]),
+            ),
+            (
+                _get_selected_text(f"p4_name_ui__{sheet}", STRUCTURED_DEFAULTS["programs"][3][0]),
+                _get_selected_col(child_cols, f"p4_col_ui__{sheet}", STRUCTURED_DEFAULTS["programs"][3][1]),
+            ),
+        ]
+        structured_indicator = structured_core(df, use_id, id_col, structured_programs, "All rows")
+
+        cp_team_col = _get_selected_col(child_cols, f"cp_team__{sheet}", CP_SERVICE_DEFAULT_NAMES["TEAM_UP"])
+        cp_heart_col = _get_selected_col(child_cols, f"cp_heart__{sheet}", CP_SERVICE_DEFAULT_NAMES["HEART"])
+        cp_cyr_col = _get_selected_col(child_cols, f"cp_cyr__{sheet}", CP_SERVICE_DEFAULT_NAMES["CYR"])
+        cp_ismf_col = _get_selected_col(child_cols, f"cp_ismf__{sheet}", CP_SERVICE_DEFAULT_NAMES["ISMF"])
+        cp_sf_col = _get_selected_col(child_cols, f"cp_sf__{sheet}", CP_SERVICE_DEFAULT_NAMES["SAFE_FAMILIES"])
+        cp_rec_col = _get_selected_col(child_cols, f"cp_rec__{sheet}", CP_SERVICE_DEFAULT_NAMES["RECREATIONAL"])
+        cp_infedu_col = _get_selected_col(child_cols, f"cp_infedu__{sheet}", CP_SERVICE_DEFAULT_NAMES["INFORMAL_EDU"])
+        cp_eore_col = _get_selected_col(child_cols, f"cp_eore__{sheet}", CP_SERVICE_DEFAULT_NAMES["EORE"])
+
+        child_cp_total_sessions, child_cp_mask = cp_services_indicator_core(
+            df,
+            use_id,
+            id_col,
+            cp_team_col,
+            cp_heart_col,
+            cp_cyr_col,
+            cp_ismf_col,
+            cp_sf_col,
+            cp_rec_col,
+            cp_infedu_col,
+            cp_eore_col,
+        )
+        child_cp_indicator = int(child_cp_mask.sum())
+
+        adult_cp_sf_col = _get_selected_col(adult_cols, f"adult_cp_sf__{adult_sheet}", "Safe Families")
+        adult_cp_unstructured_col = _get_selected_col(
+            adult_cols, f"adult_cp_unstructured__{adult_sheet}", "Unstructured MHPSS Activities"
+        )
+        adult_cp_total_sessions, adult_cp_mask = cp_services_indicator_adult_core(
+            adult_df,
+            use_adult_id,
+            adult_id_col,
+            adult_cp_sf_col,
+            adult_cp_unstructured_col,
+        )
+        adult_cp_indicator = int(adult_cp_mask.sum())
+
+        sf_completed_col = _get_selected_col(
+            child_cols, f"sf_comp__{sheet}", SAFE_FAMILIES_DEFAULT_NAMES["completed"]
+        )
+        sf_date_col = _get_selected_col(
+            child_cols, f"sf_date__{sheet}", SAFE_FAMILIES_DEFAULT_NAMES["date"]
+        )
+        sf_gender_col = _get_selected_col(
+            child_cols, f"sf_gender__{sheet}", SAFE_FAMILIES_DEFAULT_NAMES["gender"]
+        )
+        _, _, child_sf_completed_total, _ = safe_families_monthly_gender_core(
+            df, use_id, id_col, sf_completed_col, sf_date_col, sf_gender_col
+        )
+
+        adult_sf_completed_col = _get_selected_col(
+            adult_cols, f"adult_sf_comp__{adult_sheet}", "SF Completed (5)"
+        )
+        adult_sf_date_col = _get_selected_col(
+            adult_cols, f"adult_sf_date__{adult_sheet}", "SF Completed (5) Date"
+        )
+        adult_sf_gender_col = _get_selected_col(
+            adult_cols, f"adult_sf_gender__{adult_sheet}", "Gender"
+        )
+        _, _, adult_sf_completed_total, _ = safe_families_monthly_gender_adult_core(
+            adult_df,
+            use_adult_id,
+            adult_id_col,
+            adult_sf_completed_col,
+            adult_sf_date_col,
+            adult_sf_gender_col,
+        )
+
+        render_indicator_banner(
+            "# of individuals participating in child protection services",
+            int(child_cp_indicator + adult_cp_indicator),
+            theme_mode,
+        )
+        render_indicator_banner(
+            "# of children and adults who received mental health and/or psycosocial support (structured MHPSS programs)",
+            int(structured_indicator["n_any"]),
+            theme_mode,
+        )
+        render_indicator_banner(
+            "# of individuals who attended Safe Families positive parenting group or children’s sessions",
+            int(child_sf_completed_total + adult_sf_completed_total),
+            theme_mode,
+        )
     
     # -----------------------------
     # Structured
@@ -316,7 +527,13 @@ def main():
     
         structured = structured_core(df, use_id, id_col, programs, export_filter)
         st.session_state["structured_cached"] = structured
-    
+
+        render_indicator_banner(
+            "# of children and adults who received mental health and/or psycosocial support (structured MHPSS programs)",
+            int(structured["n_any"]),
+            theme_mode,
+        )
+
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total children", f"{structured['n_total']:,}")
         c2.metric("At least 1 structured program", f"{structured['n_any']:,}")
@@ -457,7 +674,7 @@ def main():
     
         st.divider()
         mt1, mt2, mt3, mt4, mt5 = st.tabs(
-            ["Monthly total", "Monthly by first program", "Monthly by gender", "Children list", "Monthly by first program + gender"]
+            ["Monthly total", "Monthly by first program", "Monthly by first program + gender", "Monthly by gender", "Children list"]
         )
         with mt1:
             monthly_total_view = _filter_by_month(monthly_struct["monthly_total"])
@@ -480,6 +697,16 @@ def main():
                 key="dl_struct_monthly_by_program",
             )
         with mt3:
+            monthly_by_program_gender_view = _filter_by_month(monthly_struct["monthly_by_program_gender_pivot"])
+            st.dataframe(monthly_by_program_gender_view, use_container_width=True)
+            st.download_button(
+                "Download monthly by first program + gender (CSV)",
+                data=monthly_by_program_gender_view.to_csv(index=False).encode("utf-8"),
+                file_name=f"structured_mhpss_first_time_monthly_by_program_gender_{month_suffix}.csv",
+                mime="text/csv",
+                key="dl_struct_monthly_by_program_gender",
+            )
+        with mt4:
             monthly_by_gender_view = _filter_by_month(monthly_struct["monthly_by_gender_pivot"])
             st.dataframe(monthly_by_gender_view, use_container_width=True)
             st.download_button(
@@ -489,9 +716,17 @@ def main():
                 mime="text/csv",
                 key="dl_struct_monthly_by_gender",
             )
-        with mt4:
+        with mt5:
             required_cols = ["Child Full Name", "Full Parent Name", "Parents phone"]
-            resolved_cols = {c: _resolve_col_name(df.columns.tolist(), c) for c in required_cols}
+            resolved_cols = {
+                "Child Full Name": _resolve_with_aliases(
+                    df.columns.tolist(),
+                    ["Child Full Name", "Сhild Full Name"],  # latin C / cyrillic С
+                    excel_letter_fallback="O",
+                ),
+                "Full Parent Name": _resolve_col_name(df.columns.tolist(), "Full Parent Name"),
+                "Parents phone": _resolve_col_name(df.columns.tolist(), "Parents phone"),
+            }
             missing_cols = [c for c, real_col in resolved_cols.items() if real_col is None]
 
             if missing_cols:
@@ -557,16 +792,6 @@ def main():
                     mime="text/csv",
                     key="dl_struct_monthly_children_list",
                 )
-        with mt5:
-            monthly_by_program_gender_view = _filter_by_month(monthly_struct["monthly_by_program_gender_pivot"])
-            st.dataframe(monthly_by_program_gender_view, use_container_width=True)
-            st.download_button(
-                "Download monthly by first program + gender (CSV)",
-                data=monthly_by_program_gender_view.to_csv(index=False).encode("utf-8"),
-                file_name=f"structured_mhpss_first_time_monthly_by_program_gender_{month_suffix}.csv",
-                mime="text/csv",
-                key="dl_struct_monthly_by_program_gender",
-            )
     
     # -----------------------------
     # CP Services Indicator
@@ -647,6 +872,345 @@ def main():
                 "Average sessions per child": round(float(total_sessions.mean()), 2),
                 "Max sessions per child": float(total_sessions.max()),
             })
+
+        st.divider()
+        st.subheader("Monthly achievements: CP services indicator (>=2 sessions)")
+        st.caption("Counts child in the month when indicator is first reached, based on selected date column.")
+
+        cp_date_col = pick_col_with_default(
+            df,
+            "CP indicator date column",
+            "Date",
+            key=f"cp_month_date__{sheet}",
+        )
+        cp_gender_col = pick_col_with_default(
+            df,
+            "Gender column",
+            "Gender",
+            key=f"cp_month_gender__{sheet}",
+        )
+
+        cp_monthly = cp_services_indicator_monthly_core(
+            df,
+            use_id,
+            id_col,
+            team_s_col,
+            heart_s_col,
+            cyr_s_col,
+            ismf_s_col,
+            sf_s_col,
+            rec_s_col,
+            infedu_s_col,
+            eore_s_col,
+            cp_date_col,
+            cp_gender_col,
+        )
+
+        cp_available_months = (
+            cp_monthly["first_dt"]
+            .dropna()
+            .dt.to_period("M")
+            .astype(str)
+            .sort_values()
+            .unique()
+            .tolist()
+        )
+        cp_month_options = ["All months"] + cp_available_months
+        cp_selected_month = st.selectbox(
+            "Select month for CP indicator details",
+            cp_month_options,
+            key=f"cp_month_filter__{sheet}",
+        )
+        cp_month_suffix = "all_months" if cp_selected_month == "All months" else cp_selected_month.replace("-", "_")
+
+        def _cp_filter_by_month(monthly_df: pd.DataFrame) -> pd.DataFrame:
+            if cp_selected_month == "All months":
+                return monthly_df
+            filtered = monthly_df.copy()
+            return filtered[filtered["Month"].astype("string") == cp_selected_month].reset_index(drop=True)
+
+        cp1, cp2, cp3 = st.columns(3)
+        cp1.metric("Total child indicator achievements (all time)", f"{int(cp_monthly['first_dt'].dropna().shape[0]):,}")
+        cp2.metric("Indicator met but date missing", f"{int(cp_monthly['missing_date_count']):,}")
+        cp3.metric("Children not meeting indicator", f"{int(indicator_total_children - indicator_total):,}")
+        cp_selected_month_count = int(
+            cp_monthly["first_dt"].dropna().dt.to_period("M").astype(str).eq(cp_selected_month).sum()
+        ) if cp_selected_month != "All months" else int(cp_monthly["first_dt"].dropna().shape[0])
+        st.caption(f"Selected month: {cp_selected_month} | Indicator achievements in selection: {cp_selected_month_count:,}")
+
+        cpm1, cpm2, cpm3 = st.tabs(["Monthly total", "Monthly by gender", "Children list"])
+        with cpm1:
+            cp_monthly_total_view = _cp_filter_by_month(cp_monthly["monthly_total"])
+            st.dataframe(cp_monthly_total_view, use_container_width=True)
+            st.download_button(
+                "Download CP indicator monthly totals (CSV)",
+                data=cp_monthly_total_view.to_csv(index=False).encode("utf-8"),
+                file_name=f"cp_indicator_monthly_total_{cp_month_suffix}.csv",
+                mime="text/csv",
+                key="dl_cp_monthly_total",
+            )
+        with cpm2:
+            cp_monthly_gender_view = _cp_filter_by_month(cp_monthly["monthly_by_gender_pivot"])
+            st.dataframe(cp_monthly_gender_view, use_container_width=True)
+            st.download_button(
+                "Download CP indicator monthly by gender (CSV)",
+                data=cp_monthly_gender_view.to_csv(index=False).encode("utf-8"),
+                file_name=f"cp_indicator_monthly_by_gender_{cp_month_suffix}.csv",
+                mime="text/csv",
+                key="dl_cp_monthly_gender",
+            )
+        with cpm3:
+            required_cols = ["Child Full Name", "Full Parent Name", "Parents phone"]
+            resolved_cols = {
+                "Child Full Name": _resolve_with_aliases(
+                    df.columns.tolist(),
+                    ["Child Full Name", "Сhild Full Name"],  # latin C / cyrillic С
+                    excel_letter_fallback="O",
+                ),
+                "Full Parent Name": _resolve_col_name(df.columns.tolist(), "Full Parent Name"),
+                "Parents phone": _resolve_col_name(df.columns.tolist(), "Parents phone"),
+            }
+            missing_cols = [c for c, real_col in resolved_cols.items() if real_col is None]
+
+            if missing_cols:
+                st.warning(
+                    f"Could not auto-detect columns: {', '.join(missing_cols)}. "
+                    "Please map them manually below."
+                )
+                resolved_cols["Child Full Name"] = st.selectbox(
+                    "Child Full Name column",
+                    df.columns.tolist(),
+                    index=_find_default_index(df.columns.tolist(), "Child Full Name"),
+                    key=f"cp_child_full_name__{sheet}",
+                )
+                resolved_cols["Full Parent Name"] = st.selectbox(
+                    "Full Parent Name column",
+                    df.columns.tolist(),
+                    index=_find_default_index(df.columns.tolist(), "Full Parent Name"),
+                    key=f"cp_full_parent_name__{sheet}",
+                )
+                resolved_cols["Parents phone"] = st.selectbox(
+                    "Parents phone column",
+                    df.columns.tolist(),
+                    index=_find_default_index(df.columns.tolist(), "Parents phone"),
+                    key=f"cp_parents_phone__{sheet}",
+                )
+
+            cp_first_meta = cp_monthly["first_meta"].copy()
+            if cp_selected_month != "All months":
+                cp_first_meta = cp_first_meta[
+                    cp_first_meta["First indicator date"].dt.to_period("M").astype(str) == cp_selected_month
+                ]
+
+            if cp_first_meta.empty:
+                st.info(f"No CP indicator achievements found for {cp_selected_month}.")
+            else:
+                cp_first_meta["_row_index"] = cp_first_meta["_row_index"].astype(int)
+                selected_cols = [resolved_cols[c] for c in required_cols]
+                cp_child_list_df = df.loc[cp_first_meta["_row_index"], selected_cols].reset_index(drop=True)
+                cp_child_list_df.columns = required_cols
+                cp_child_list_df = pd.concat(
+                    [
+                        cp_child_list_df,
+                        cp_first_meta[["First indicator date", "Gender", "Total sessions"]].reset_index(drop=True),
+                    ],
+                    axis=1,
+                )
+                cp_child_list_df["First indicator date"] = pd.to_datetime(
+                    cp_child_list_df["First indicator date"], errors="coerce"
+                ).dt.date
+
+                st.caption(f"Children in CP indicator list: {len(cp_child_list_df):,}")
+                st.dataframe(cp_child_list_df, use_container_width=True)
+                st.download_button(
+                    "Download CP indicator children list (CSV)",
+                    data=cp_child_list_df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"cp_indicator_children_list_{cp_month_suffix}.csv",
+                    mime="text/csv",
+                    key="dl_cp_monthly_children_list",
+                )
+
+        st.divider()
+        st.subheader("Adults: CP services indicator (>=2 total sessions)")
+        st.caption("Adult logic: Safe Families + Unstructured MHPSS Activities, threshold >=2 sessions.")
+
+        adult_cp_sf_col = pick_col_with_default(
+            adult_df,
+            "Adult Safe Families sessions column (Z)",
+            "Safe Families",
+            key=f"adult_cp_sf__{adult_sheet}",
+        )
+        adult_cp_unstructured_col = pick_col_with_default(
+            adult_df,
+            "Adult Unstructured MHPSS sessions column (AF)",
+            "Unstructured MHPSS Activities",
+            key=f"adult_cp_unstructured__{adult_sheet}",
+        )
+
+        adult_total_sessions, adult_indicator_mask = cp_services_indicator_adult_core(
+            adult_df,
+            use_adult_id,
+            adult_id_col,
+            adult_cp_sf_col,
+            adult_cp_unstructured_col,
+        )
+
+        adult_indicator_total = int(adult_indicator_mask.sum())
+        adult_indicator_total_people = int(len(adult_total_sessions))
+        adult_indicator_rate = (
+            (adult_indicator_total / adult_indicator_total_people * 100)
+            if adult_indicator_total_people > 0
+            else 0.0
+        )
+
+        ai1, ai2, ai3 = st.columns(3)
+        ai1.metric("Adults meeting indicator", f"{adult_indicator_total:,}")
+        ai2.metric("Total adults considered", f"{adult_indicator_total_people:,}")
+        ai3.metric("Rate (%)", f"{adult_indicator_rate:.2f}%")
+
+        render_indicator_banner(
+            "# of individuals participating in child protection services",
+            int(indicator_total + adult_indicator_total),
+            theme_mode,
+        )
+
+        adult_cp_date_col = pick_col_with_default(
+            adult_df,
+            "Adult indicator date column (Y/AB/AG depending on source)",
+            "Attendance 2nd Date",
+            key=f"adult_cp_date__{adult_sheet}",
+        )
+        adult_cp_gender_col = pick_col_with_default(
+            adult_df,
+            "Adult gender column (N)",
+            "Gender",
+            key=f"adult_cp_gender__{adult_sheet}",
+        )
+
+        adult_cp_monthly = cp_services_indicator_adult_monthly_core(
+            adult_df,
+            use_adult_id,
+            adult_id_col,
+            adult_cp_sf_col,
+            adult_cp_unstructured_col,
+            adult_cp_date_col,
+            adult_cp_gender_col,
+        )
+
+        adult_cp_available_months = (
+            adult_cp_monthly["first_dt"]
+            .dropna()
+            .dt.to_period("M")
+            .astype(str)
+            .sort_values()
+            .unique()
+            .tolist()
+        )
+        adult_cp_month_options = ["All months"] + adult_cp_available_months
+        adult_cp_selected_month = st.selectbox(
+            "Select month for adult CP indicator details",
+            adult_cp_month_options,
+            key=f"adult_cp_month_filter__{adult_sheet}",
+        )
+        adult_cp_month_suffix = (
+            "all_months" if adult_cp_selected_month == "All months" else adult_cp_selected_month.replace("-", "_")
+        )
+
+        def _adult_cp_filter_by_month(monthly_df: pd.DataFrame) -> pd.DataFrame:
+            if adult_cp_selected_month == "All months":
+                return monthly_df
+            filtered = monthly_df.copy()
+            return filtered[filtered["Month"].astype("string") == adult_cp_selected_month].reset_index(drop=True)
+
+        acp1, acp2 = st.columns(2)
+        acp1.metric(
+            "Total adult indicator achievements (all time)",
+            f"{int(adult_cp_monthly['first_dt'].dropna().shape[0]):,}",
+        )
+        acp2.metric("Adult indicator met but date missing", f"{int(adult_cp_monthly['missing_date_count']):,}")
+
+        acpm1, acpm2, acpm3 = st.tabs(["Monthly total (Adults)", "Monthly by gender (Adults)", "Adults list"])
+        with acpm1:
+            adult_cp_monthly_total_view = _adult_cp_filter_by_month(adult_cp_monthly["monthly_total"])
+            st.dataframe(adult_cp_monthly_total_view, use_container_width=True)
+            st.download_button(
+                "Download adult CP indicator monthly totals (CSV)",
+                data=adult_cp_monthly_total_view.to_csv(index=False).encode("utf-8"),
+                file_name=f"adult_cp_indicator_monthly_total_{adult_cp_month_suffix}.csv",
+                mime="text/csv",
+                key="dl_adult_cp_monthly_total",
+            )
+        with acpm2:
+            adult_cp_monthly_gender_view = _adult_cp_filter_by_month(adult_cp_monthly["monthly_by_gender_pivot"])
+            st.dataframe(adult_cp_monthly_gender_view, use_container_width=True)
+            st.download_button(
+                "Download adult CP indicator monthly by gender (CSV)",
+                data=adult_cp_monthly_gender_view.to_csv(index=False).encode("utf-8"),
+                file_name=f"adult_cp_indicator_monthly_by_gender_{adult_cp_month_suffix}.csv",
+                mime="text/csv",
+                key="dl_adult_cp_monthly_gender",
+            )
+        with acpm3:
+            adult_name_col = _resolve_with_aliases(
+                adult_df.columns.tolist(),
+                ["Full Name", "Adult Full Name", "Name"],
+                excel_letter_fallback="M",
+            )
+            if adult_name_col is None:
+                adult_name_col = st.selectbox(
+                    "Adult Full Name column",
+                    adult_df.columns.tolist(),
+                    index=_find_default_index(adult_df.columns.tolist(), "Full Name"),
+                    key=f"adult_cp_full_name__{adult_sheet}",
+                )
+
+            adult_first_meta = adult_cp_monthly["first_meta"].copy()
+            if adult_cp_selected_month != "All months":
+                adult_first_meta = adult_first_meta[
+                    adult_first_meta["First indicator date"].dt.to_period("M").astype(str) == adult_cp_selected_month
+                ]
+            if adult_first_meta.empty:
+                st.info(f"No adult CP indicator achievements found for {adult_cp_selected_month}.")
+            else:
+                adult_first_meta["_row_index"] = adult_first_meta["_row_index"].astype(int)
+                adult_list_df = adult_df.loc[adult_first_meta["_row_index"], [adult_name_col]].reset_index(drop=True)
+                adult_list_df.columns = ["Full Name"]
+                adult_list_df = pd.concat(
+                    [
+                        adult_list_df,
+                        adult_first_meta[["First indicator date", "Gender", "Total sessions"]].reset_index(drop=True),
+                    ],
+                    axis=1,
+                )
+                adult_list_df["First indicator date"] = pd.to_datetime(
+                    adult_list_df["First indicator date"], errors="coerce"
+                ).dt.date
+
+                st.dataframe(adult_list_df, use_container_width=True)
+                st.download_button(
+                    "Download adult CP indicator list (CSV)",
+                    data=adult_list_df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"adult_cp_indicator_list_{adult_cp_month_suffix}.csv",
+                    mime="text/csv",
+                    key="dl_adult_cp_monthly_list",
+                )
+
+        if st.checkbox("Enable export list: adults meeting indicator (>=2 sessions)", key="adult_cp_export_chk"):
+            if use_adult_id:
+                adult_ids = adult_total_sessions[adult_indicator_mask].index
+                export_adult_indicator_df = adult_df[adult_df[adult_id_col].isin(adult_ids)].copy()
+            else:
+                export_adult_indicator_df = adult_df.loc[adult_indicator_mask].copy()
+
+            export_adult_indicator_df.columns = make_unique_columns(export_adult_indicator_df.columns)
+
+            st.download_button(
+                "Download adult indicator list (CSV)",
+                data=export_adult_indicator_df.to_csv(index=False).encode("utf-8"),
+                file_name="indicator_CP_services_adults.csv",
+                mime="text/csv",
+                key="dl_cp_indicator_adults",
+            )
     
         if st.checkbox("Enable export list: children meeting indicator (>=2 sessions)", key="cp_export_chk"):
             if use_id:
@@ -696,7 +1260,7 @@ def main():
         )
     
         c1, c2 = st.columns(2)
-        c1.metric("Safe Families completed (total)", f"{sf_completed_total:,}")
+        c1.metric("Child Safe Families completed (total)", f"{sf_completed_total:,}")
         c2.metric("Completed=yes but date missing", f"{sf_missing_dates:,}")
     
         st.dataframe(sf_monthly_pivot, use_container_width=True)
@@ -712,6 +1276,64 @@ def main():
         st.session_state["safe_families_cached"] = {
             "monthly": sf_monthly_pivot,
             "summary": sf_summary_df,
+        }
+
+        st.divider()
+        st.subheader("Adults: Safe Families monthly achievements by gender")
+        st.caption("AA = SF Completed (5), AB = SF Completed (5) Date, N = Gender (male/female)")
+
+        adult_sf_completed_col = pick_col_with_default(
+            adult_df,
+            "Adult Safe Families Completed (AA)",
+            "SF Completed (5)",
+            key=f"adult_sf_comp__{adult_sheet}",
+        )
+        adult_sf_date_col = pick_col_with_default(
+            adult_df,
+            "Adult Safe Families completion date (AB)",
+            "SF Completed (5) Date",
+            key=f"adult_sf_date__{adult_sheet}",
+        )
+        adult_sf_gender_col = pick_col_with_default(
+            adult_df,
+            "Adult gender column (N)",
+            "Gender",
+            key=f"adult_sf_gender__{adult_sheet}",
+        )
+
+        adult_sf_monthly_pivot, adult_sf_summary_df, adult_sf_completed_total, adult_sf_missing_dates = (
+            safe_families_monthly_gender_adult_core(
+                adult_df,
+                use_adult_id,
+                adult_id_col,
+                adult_sf_completed_col,
+                adult_sf_date_col,
+                adult_sf_gender_col,
+            )
+        )
+
+        a1, a2 = st.columns(2)
+        a1.metric("Adult Safe Families completed (total)", f"{adult_sf_completed_total:,}")
+        a2.metric("Adult completed=yes but date missing", f"{adult_sf_missing_dates:,}")
+
+        render_indicator_banner(
+            "# of individuals who attended Safe Families positive parenting group or children’s sessions",
+            int(sf_completed_total + adult_sf_completed_total),
+            theme_mode,
+        )
+
+        st.dataframe(adult_sf_monthly_pivot, use_container_width=True)
+        st.download_button(
+            "Download Adult Safe Families monthly by gender (CSV)",
+            data=adult_sf_monthly_pivot.to_csv(index=False).encode("utf-8"),
+            file_name="adult_safe_families_monthly_by_gender.csv",
+            mime="text/csv",
+            key="dl_adult_sf_monthly_by_gender",
+        )
+
+        st.session_state["safe_families_adult_cached"] = {
+            "monthly": adult_sf_monthly_pivot,
+            "summary": adult_sf_summary_df,
         }
 
     # -----------------------------
@@ -938,6 +1560,7 @@ def main():
     with tab_disability:
         st.subheader("Disability status analysis")
         st.caption("Default mapping from source file: X = Disability status, U = Gender")
+        st.caption("Filter rule: only children meeting CP indicator (>=2 total sessions).")
 
         dis_col_left, dis_col_right = st.columns(2)
         with dis_col_left:
@@ -955,8 +1578,36 @@ def main():
                 key=f"dis_gender__{sheet}",
             )
 
-        dis = disability_gender_core(
+        dis_team_col = _get_selected_col(df.columns.tolist(), f"cp_team__{sheet}", CP_SERVICE_DEFAULT_NAMES["TEAM_UP"])
+        dis_heart_col = _get_selected_col(df.columns.tolist(), f"cp_heart__{sheet}", CP_SERVICE_DEFAULT_NAMES["HEART"])
+        dis_cyr_col = _get_selected_col(df.columns.tolist(), f"cp_cyr__{sheet}", CP_SERVICE_DEFAULT_NAMES["CYR"])
+        dis_ismf_col = _get_selected_col(df.columns.tolist(), f"cp_ismf__{sheet}", CP_SERVICE_DEFAULT_NAMES["ISMF"])
+        dis_sf_col = _get_selected_col(df.columns.tolist(), f"cp_sf__{sheet}", CP_SERVICE_DEFAULT_NAMES["SAFE_FAMILIES"])
+        dis_rec_col = _get_selected_col(df.columns.tolist(), f"cp_rec__{sheet}", CP_SERVICE_DEFAULT_NAMES["RECREATIONAL"])
+        dis_infedu_col = _get_selected_col(df.columns.tolist(), f"cp_infedu__{sheet}", CP_SERVICE_DEFAULT_NAMES["INFORMAL_EDU"])
+        dis_eore_col = _get_selected_col(df.columns.tolist(), f"cp_eore__{sheet}", CP_SERVICE_DEFAULT_NAMES["EORE"])
+
+        dis_total_sessions, dis_indicator_mask = cp_services_indicator_core(
             df,
+            use_id,
+            id_col,
+            dis_team_col,
+            dis_heart_col,
+            dis_cyr_col,
+            dis_ismf_col,
+            dis_sf_col,
+            dis_rec_col,
+            dis_infedu_col,
+            dis_eore_col,
+        )
+        if use_id:
+            dis_ids = dis_total_sessions[dis_indicator_mask].index
+            dis_source_df = df[df[id_col].isin(dis_ids)].copy()
+        else:
+            dis_source_df = df.loc[dis_indicator_mask].copy()
+
+        dis = disability_gender_core(
+            dis_source_df,
             use_id,
             id_col,
             disability_col,
@@ -1000,6 +1651,7 @@ def main():
     
         structured_cached = st.session_state.get("structured_cached")
         sf_cached = st.session_state.get("safe_families_cached")
+        sf_adult_cached = st.session_state.get("safe_families_adult_cached")
         geo_cached = st.session_state.get("geography_cached")
         disability_cached = st.session_state.get("disability_cached")
     
@@ -1007,6 +1659,8 @@ def main():
             st.warning("Open the 'Structured' tab once to generate structured tables for the Excel report.")
         if not sf_cached:
             st.info("If you want Safe Families tables included in the Excel report, open 'Safe Families Monthly' tab once.")
+        if not sf_adult_cached:
+            st.info("If you want Adult Safe Families tables included in the Excel report, open 'Safe Families Monthly' tab once.")
         if not geo_cached:
             st.info("If you want Geography tables included in the Excel report, open 'Geography' tab once.")
         if not disability_cached:
@@ -1033,6 +1687,9 @@ def main():
         if sf_cached:
             sheets["Safe_Families_Monthly_Gender"] = sf_cached["monthly"]
             sheets["Safe_Families_Summary"] = sf_cached["summary"]
+        if sf_adult_cached:
+            sheets["Adult_SF_Monthly_Gender"] = sf_adult_cached["monthly"]
+            sheets["Adult_SF_Summary"] = sf_adult_cached["summary"]
 
         if geo_cached:
             sheets["Geo_By_Oblast"] = geo_cached["by_oblast"]
