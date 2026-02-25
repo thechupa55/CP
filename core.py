@@ -8,6 +8,232 @@ from utils import (
 )
 
 
+def data_quality_dashboard_core(
+    df: pd.DataFrame,
+    id_col: str | None,
+    gender_col: str | None,
+    completed_date_checks: list[tuple[str, str | None, str | None]],
+    date_checks: list[tuple[str, str | None]],
+):
+    work = df.copy()
+    summary_rows: list[list[object]] = [["Rows", int(len(work))]]
+
+    duplicate_ids_df = pd.DataFrame(columns=["ID", "Rows"])
+    gender_conflicts_df = pd.DataFrame(columns=["ID", "Gender values"])
+
+    if id_col and id_col in work.columns:
+        id_series = work[id_col]
+        id_missing = int(id_series.isna().sum())
+        summary_rows.append(["Rows with missing ID", id_missing])
+
+        id_non_null = id_series.dropna()
+        dup_mask = id_non_null.duplicated(keep=False)
+        dup_ids = id_non_null[dup_mask]
+        duplicate_ids_df = (
+            dup_ids.value_counts()
+            .rename_axis("ID")
+            .reset_index(name="Rows")
+            .sort_values(["Rows", "ID"], ascending=[False, True])
+            .reset_index(drop=True)
+        )
+        summary_rows.append(["Duplicate ID values", int(len(duplicate_ids_df))])
+
+        if gender_col and gender_col in work.columns:
+            g = work[gender_col].astype("string").str.strip().str.lower()
+            tmp = pd.DataFrame({"_id": id_series, "_gender": g})
+            tmp = tmp[tmp["_id"].notna()].copy()
+            # Ignore blanks in conflict detection.
+            tmp["_gender"] = tmp["_gender"].where(tmp["_gender"].notna() & tmp["_gender"].ne(""), pd.NA)
+            conflicts = (
+                tmp.groupby("_id")["_gender"]
+                .agg(lambda s: sorted(set([x for x in s.dropna().tolist()])))
+            )
+            conflicts = conflicts[conflicts.apply(len) > 1]
+            gender_conflicts_df = conflicts.reset_index()
+            gender_conflicts_df.columns = ["ID", "Gender values"]
+            gender_conflicts_df["Gender values"] = gender_conflicts_df["Gender values"].apply(lambda v: ", ".join(v))
+            summary_rows.append(["IDs with gender conflicts", int(len(gender_conflicts_df))])
+    else:
+        summary_rows.append(["Rows with missing ID", 0])
+        summary_rows.append(["Duplicate ID values", 0])
+        summary_rows.append(["IDs with gender conflicts", 0])
+
+    completed_missing_rows: list[list[object]] = []
+    for label, completed_col, date_col in completed_date_checks:
+        if not completed_col or not date_col:
+            completed_missing_rows.append([label, 0, "column not mapped"])
+            continue
+        if completed_col not in work.columns or date_col not in work.columns:
+            completed_missing_rows.append([label, 0, "column not found"])
+            continue
+        done = to_bool_series(work[completed_col])
+        dt = parse_mixed_date(work[date_col])
+        missing_cnt = int((done & dt.isna()).sum())
+        completed_missing_rows.append([label, missing_cnt, "ok"])
+    completed_missing_df = pd.DataFrame(
+        completed_missing_rows,
+        columns=["Check", "Completed=yes but date missing", "Status"],
+    )
+
+    invalid_date_rows: list[list[object]] = []
+    for label, date_col in date_checks:
+        if not date_col:
+            invalid_date_rows.append([label, 0, "column not mapped"])
+            continue
+        if date_col not in work.columns:
+            invalid_date_rows.append([label, 0, "column not found"])
+            continue
+        raw = work[date_col].astype("string").str.strip()
+        parsed = parse_mixed_date(work[date_col])
+        invalid_cnt = int((raw.notna() & raw.ne("") & parsed.isna()).sum())
+        invalid_date_rows.append([label, invalid_cnt, "ok"])
+    invalid_dates_df = pd.DataFrame(
+        invalid_date_rows,
+        columns=["Date field", "Invalid date values", "Status"],
+    )
+
+    summary_df = pd.DataFrame(summary_rows, columns=["Metric", "Value"])
+
+    return {
+        "summary_df": summary_df,
+        "completed_missing_df": completed_missing_df,
+        "invalid_dates_df": invalid_dates_df,
+        "duplicate_ids_df": duplicate_ids_df,
+        "gender_conflicts_df": gender_conflicts_df,
+    }
+
+
+def parent_name_phone_conflicts_core(
+    df: pd.DataFrame,
+    parent_name_col: str,
+    parent_phone_col: str,
+):
+    parent = df[parent_name_col].astype("string").str.strip()
+    phone = df[parent_phone_col].astype("string").str.strip()
+
+    base = pd.DataFrame({"Full Parent Name": parent, "Parents phone": phone})
+    base = base[
+        base["Full Parent Name"].notna()
+        & base["Full Parent Name"].ne("")
+        & base["Parents phone"].notna()
+        & base["Parents phone"].ne("")
+    ].copy()
+
+    grouped = (
+        base.groupby("Full Parent Name")["Parents phone"]
+        .agg(lambda s: sorted(set(s.tolist())))
+        .reset_index()
+    )
+    grouped["Distinct phones"] = grouped["Parents phone"].apply(len)
+    conflicts = grouped[grouped["Distinct phones"] > 1].copy()
+    conflicts["Phones"] = conflicts["Parents phone"].apply(lambda v: ", ".join(v))
+    conflicts = conflicts[["Full Parent Name", "Distinct phones", "Phones"]]
+    conflicts = conflicts.sort_values(["Distinct phones", "Full Parent Name"], ascending=[False, True]).reset_index(drop=True)
+
+    summary_df = pd.DataFrame(
+        [
+            ["Rows checked (name+phone non-empty)", int(len(base))],
+            ["Unique parent names checked", int(base["Full Parent Name"].nunique())],
+            ["Parents with >1 distinct phone", int(len(conflicts))],
+        ],
+        columns=["Metric", "Value"],
+    )
+
+    return {
+        "summary_df": summary_df,
+        "conflicts_df": conflicts,
+    }
+
+
+def child_name_duplicates_core(
+    df: pd.DataFrame,
+    child_name_col: str,
+    settlement_col: str,
+    parent_name_col: str,
+    parent_phone_col: str,
+    dob_col: str,
+):
+    child_name = df[child_name_col].astype("string").str.strip()
+    settlement = df[settlement_col].astype("string").str.strip()
+    parent_name = df[parent_name_col].astype("string").str.strip()
+    parent_phone = df[parent_phone_col].astype("string").str.strip()
+    dob = df[dob_col]
+
+    base = pd.DataFrame(
+        {
+            "Child Full Name": child_name,
+            "Settlement": settlement,
+            "Full Parent Name": parent_name,
+            "Parents phone": parent_phone,
+            "Date of birth": dob,
+        }
+    )
+    base = base[base["Child Full Name"].notna() & base["Child Full Name"].ne("")].copy()
+    base["_child_key"] = base["Child Full Name"].astype("string").str.casefold()
+
+    dup_keys = base["_child_key"][base["_child_key"].duplicated(keep=False)].unique().tolist()
+    duplicates = base[base["_child_key"].isin(dup_keys)].copy()
+    duplicates["Date of birth"] = pd.to_datetime(duplicates["Date of birth"], errors="coerce").dt.date
+    duplicates = duplicates.drop(columns=["_child_key"]).reset_index(drop=True)
+
+    summary_df = pd.DataFrame(
+        [
+            ["Rows checked (child name non-empty)", int(len(base))],
+            ["Distinct child names checked", int(base["Child Full Name"].astype('string').str.casefold().nunique())],
+            ["Duplicate child names", int(len(dup_keys))],
+            ["Rows in duplicate groups", int(len(duplicates))],
+        ],
+        columns=["Metric", "Value"],
+    )
+
+    return {
+        "summary_df": summary_df,
+        "duplicates_df": duplicates,
+    }
+
+
+def parent_phone_name_conflicts_core(
+    df: pd.DataFrame,
+    parent_name_col: str,
+    parent_phone_col: str,
+):
+    parent = df[parent_name_col].astype("string").str.strip()
+    phone = df[parent_phone_col].astype("string").str.strip()
+
+    base = pd.DataFrame({"Full Parent Name": parent, "Parents phone": phone})
+    base = base[
+        base["Full Parent Name"].notna()
+        & base["Full Parent Name"].ne("")
+        & base["Parents phone"].notna()
+        & base["Parents phone"].ne("")
+    ].copy()
+
+    grouped = (
+        base.groupby("Parents phone")["Full Parent Name"]
+        .agg(lambda s: sorted(set(s.tolist())))
+        .reset_index()
+    )
+    grouped["Distinct parent names"] = grouped["Full Parent Name"].apply(len)
+    conflicts = grouped[grouped["Distinct parent names"] > 1].copy()
+    conflicts["Parent names"] = conflicts["Full Parent Name"].apply(lambda v: ", ".join(v))
+    conflicts = conflicts[["Parents phone", "Distinct parent names", "Parent names"]]
+    conflicts = conflicts.sort_values(["Distinct parent names", "Parents phone"], ascending=[False, True]).reset_index(drop=True)
+
+    summary_df = pd.DataFrame(
+        [
+            ["Rows checked (name+phone non-empty)", int(len(base))],
+            ["Unique phones checked", int(base["Parents phone"].nunique())],
+            ["Phones with >1 parent name", int(len(conflicts))],
+        ],
+        columns=["Metric", "Value"],
+    )
+
+    return {
+        "summary_df": summary_df,
+        "conflicts_df": conflicts,
+    }
+
+
 def structured_core(
     df: pd.DataFrame,
     use_id: bool,

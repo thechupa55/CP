@@ -23,3 +23,9 @@ python -m venv .venv
 
 - If your default `python` points to another version, use full path to Python 3.12.
 - The app opens in browser at `http://localhost:8501`.
+
+## Versioning
+
+- This project uses `Semantic Versioning` (`MAJOR.MINOR.PATCH`).
+- All user-visible changes should be recorded in [CHANGELOG.md](./CHANGELOG.md).
+- Add new work to `Unreleased` first, then move it to a version section on release day.

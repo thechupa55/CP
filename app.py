@@ -12,6 +12,7 @@ from config import (
     STRUCTURED_DEFAULTS,
 )
 from core import (
+    child_name_duplicates_core,
     cp_services_indicator_adult_core,
     cp_services_indicator_adult_monthly_core,
     cp_services_indicator_core,
@@ -19,6 +20,8 @@ from core import (
     disability_gender_core,
     geography_analysis_core,
     idp_status_gender_core,
+    parent_phone_name_conflicts_core,
+    parent_name_phone_conflicts_core,
     safe_families_monthly_gender_adult_core,
     safe_families_monthly_gender_core,
     structured_core,
@@ -311,9 +314,10 @@ def main():
     # =============================
     # Tabs
     # =============================
-    tab_preview, tab_indicators, tab_cp, tab_struct, tab_struct_month, tab_sf_month, tab_geo, tab_disability, tab_idp, tab_downloads = st.tabs(
+    tab_preview, tab_data_quality, tab_indicators, tab_cp, tab_struct, tab_struct_month, tab_sf_month, tab_geo, tab_disability, tab_idp, tab_downloads = st.tabs(
         [
             "Preview",
+            "Data Quality",
             "Indicators",
             "CP Services Indicator",
             "Structured",
@@ -334,6 +338,130 @@ def main():
         st.dataframe(df.head(int(preview_rows)), use_container_width=True)
         st.subheader("Data preview - Adult Info")
         st.dataframe(adult_df.head(int(preview_rows)), use_container_width=True)
+
+    # -----------------------------
+    # Data Quality
+    # -----------------------------
+    with tab_data_quality:
+        st.subheader("Data Quality Dashboard")
+        st.caption("Check: identify Full Parent Name values linked to more than one distinct Parents phone.")
+
+        dq_parent_col = _resolve_with_aliases(
+            df.columns.tolist(),
+            ["Full Parent Name"],
+            excel_letter_fallback="K",
+        )
+        dq_phone_col = _resolve_with_aliases(
+            df.columns.tolist(),
+            ["Parents phone", "Parent phone", "Phone"],
+            excel_letter_fallback="L",
+        )
+
+        if dq_parent_col is None:
+            dq_parent_col = st.selectbox(
+                "Full Parent Name column",
+                df.columns.tolist(),
+                index=_find_default_index(df.columns.tolist(), "Full Parent Name"),
+                key=f"dq_parent_name__{sheet}",
+            )
+        if dq_phone_col is None:
+            dq_phone_col = st.selectbox(
+                "Parents phone column",
+                df.columns.tolist(),
+                index=_find_default_index(df.columns.tolist(), "Parents phone"),
+                key=f"dq_parent_phone__{sheet}",
+            )
+
+        dq_parent_phone = parent_name_phone_conflicts_core(df, dq_parent_col, dq_phone_col)
+        st.dataframe(dq_parent_phone["summary_df"], use_container_width=True)
+        st.dataframe(dq_parent_phone["conflicts_df"], use_container_width=True)
+        st.download_button(
+            "Download parent-phone conflicts (CSV)",
+            data=dq_parent_phone["conflicts_df"].to_csv(index=False).encode("utf-8"),
+            file_name="data_quality_parent_phone_conflicts.csv",
+            mime="text/csv",
+            key="dl_dq_parent_phone_conflicts",
+        )
+
+        st.divider()
+        st.caption("Check: duplicate Child Full Name values with Settlement, Full Parent Name, Parents phone and Date of birth.")
+        dq_child_name_col = _resolve_with_aliases(
+            df.columns.tolist(),
+            ["Child Full Name", "Сhild Full Name"],
+            excel_letter_fallback="O",
+        )
+        dq_settlement_col = _resolve_with_aliases(
+            df.columns.tolist(),
+            ["Settlement"],
+            excel_letter_fallback="G",
+        )
+        dq_parent_name_for_child_col = dq_parent_col
+        dq_parent_phone_for_child_col = dq_phone_col
+        dq_dob_col = _resolve_with_aliases(
+            df.columns.tolist(),
+            ["Date of birth", "Date of Birth"],
+            excel_letter_fallback="P",
+        )
+
+        if dq_child_name_col is None:
+            dq_child_name_col = st.selectbox(
+                "Child Full Name column",
+                df.columns.tolist(),
+                index=_find_default_index(df.columns.tolist(), "Child Full Name"),
+                key=f"dq_child_name__{sheet}",
+            )
+        if dq_settlement_col is None:
+            dq_settlement_col = st.selectbox(
+                "Settlement column",
+                df.columns.tolist(),
+                index=_find_default_index(df.columns.tolist(), "Settlement"),
+                key=f"dq_child_settlement__{sheet}",
+            )
+        if dq_dob_col is None:
+            dq_dob_col = st.selectbox(
+                "Date of birth column",
+                df.columns.tolist(),
+                index=_find_default_index(df.columns.tolist(), "Date of birth"),
+                key=f"dq_child_dob__{sheet}",
+            )
+
+        dq_child_dups = child_name_duplicates_core(
+            df,
+            dq_child_name_col,
+            dq_settlement_col,
+            dq_parent_name_for_child_col,
+            dq_parent_phone_for_child_col,
+            dq_dob_col,
+        )
+        st.dataframe(dq_child_dups["summary_df"], use_container_width=True)
+        dq_duplicates_view = dq_child_dups["duplicates_df"].copy()
+        if not dq_duplicates_view.empty:
+            st.dataframe(dq_duplicates_view, use_container_width=True)
+        else:
+            st.dataframe(
+                dq_duplicates_view,
+                use_container_width=True,
+            )
+        st.download_button(
+            "Download child name duplicates (CSV)",
+            data=dq_child_dups["duplicates_df"].to_csv(index=False).encode("utf-8"),
+            file_name="data_quality_child_name_duplicates.csv",
+            mime="text/csv",
+            key="dl_dq_child_name_duplicates",
+        )
+
+        st.divider()
+        st.caption("Check: one Parents phone linked to different Full Parent Name values.")
+        dq_phone_name = parent_phone_name_conflicts_core(df, dq_parent_col, dq_phone_col)
+        st.dataframe(dq_phone_name["summary_df"], use_container_width=True)
+        st.dataframe(dq_phone_name["conflicts_df"], use_container_width=True)
+        st.download_button(
+            "Download phone-name conflicts (CSV)",
+            data=dq_phone_name["conflicts_df"].to_csv(index=False).encode("utf-8"),
+            file_name="data_quality_phone_name_conflicts.csv",
+            mime="text/csv",
+            key="dl_dq_phone_name_conflicts",
+        )
 
     # -----------------------------
     # Indicators
