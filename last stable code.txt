@@ -1,0 +1,797 @@
+# app.py
+import io
+import pandas as pd
+import streamlit as st
+
+st.set_page_config(page_title="MEAL Counter Tool", layout="wide")
+st.title("MEAL Counter Tool (Universal)")
+
+uploaded = st.file_uploader("Upload Excel file (.xlsx)", type=["xlsx"])
+
+
+def to_bool_series(series: pd.Series) -> pd.Series:
+    """Convert yes/no-like values to boolean."""
+    s = series.astype("string").str.strip().str.lower()
+    true_set = {"yes", "y", "true", "1", "completed", "done"}
+    return s.isin(true_set)
+
+
+def to_num(series: pd.Series) -> pd.Series:
+    """Convert a column to numeric safely; blanks/non-numeric -> 0."""
+    n = pd.to_numeric(series, errors="coerce")
+    return n.fillna(0)
+
+
+def make_unique_columns(cols) -> list[str]:
+    """Make column names unique inside a single DataFrame (required for Streamlit/PyArrow)."""
+    seen = {}
+    out = []
+    for c in cols:
+        c = str(c).strip()
+        if c in seen:
+            seen[c] += 1
+            out.append(f"{c}__{seen[c]}")
+        else:
+            seen[c] = 0
+            out.append(c)
+    return out
+
+
+def build_report_excel(
+    structured_summary_df: pd.DataFrame,
+    structured_per_program_df: pd.DataFrame,
+    structured_only_one_df: pd.DataFrame,
+    structured_combo_df: pd.DataFrame,
+    export_rows_df: pd.DataFrame,
+    safe_families_df: pd.DataFrame,
+    additional_sessions_df: pd.DataFrame,
+) -> bytes:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        structured_summary_df.to_excel(writer, sheet_name="Structured_Summary", index=False)
+        structured_per_program_df.to_excel(writer, sheet_name="Structured_Per_Program", index=False)
+        structured_only_one_df.to_excel(writer, sheet_name="Structured_Only_One", index=False)
+        structured_combo_df.to_excel(writer, sheet_name="Structured_Combinations", index=False)
+        export_rows_df.to_excel(writer, sheet_name="Export_Rows", index=False)
+        safe_families_df.to_excel(writer, sheet_name="Safe_Families", index=False)
+        additional_sessions_df.to_excel(writer, sheet_name="Additional_Sessions", index=False)
+    return output.getvalue()
+
+
+if not uploaded:
+    st.stop()
+
+# Read workbook
+try:
+    xls = pd.ExcelFile(uploaded)
+except Exception as e:
+    st.error(f"Cannot read Excel file: {e}")
+    st.stop()
+
+sheet = st.selectbox("Select sheet", xls.sheet_names)
+
+try:
+    df = pd.read_excel(uploaded, sheet_name=sheet)
+except Exception as e:
+    st.error(f"Cannot read selected sheet: {e}")
+    st.stop()
+
+# Clean + force unique column names for this sheet
+df.columns = df.columns.astype(str).str.strip()
+df.columns = make_unique_columns(df.columns)
+
+st.caption(f"Rows: {len(df):,} | Columns: {len(df.columns):,}")
+
+with st.expander("Preview (first 20 rows)", expanded=False):
+    st.dataframe(df.head(20), use_container_width=True)
+
+# Optional unique ID column (if file has multiple rows per child)
+id_col = st.selectbox(
+    "Optional: select Unique Child ID column (leave blank if 1 row = 1 child)",
+    ["(none)"] + df.columns.tolist(),
+)
+use_id = id_col != "(none)"
+
+# ===============================
+# STRUCTURED PROGRAMS (4 programs)
+# ===============================
+st.subheader("Structured programs (TEAM_UP / HEART / CYR / ISMF)")
+
+# helper: preselect a column by exact name if it exists
+def pick_col_with_default(label: str, default_name: str):
+    opts = df.columns.tolist()
+    idx = opts.index(default_name) if default_name in opts else 0
+    return st.selectbox(label, opts, index=idx)
+
+col_left, col_right = st.columns(2)
+
+with col_left:
+    p1_name = st.text_input("Program 1 name", value="TEAM_UP")
+    p1_col = pick_col_with_default("Program 1 column", "TEAM_UP Completed")
+
+    p2_name = st.text_input("Program 2 name", value="HEART")
+    p2_col = pick_col_with_default("Program 2 column", "HEART Completed")
+
+with col_right:
+    p3_name = st.text_input("Program 3 name", value="CYR")
+    p3_col = pick_col_with_default("Program 3 column", "CYR Completed")
+
+    p4_name = st.text_input("Program 4 name", value="ISMF")
+    p4_col = pick_col_with_default("Program 4 column", "ISMF Completed")
+
+programs = [
+    (p1_name.strip() or "PROGRAM_1", p1_col),
+    (p2_name.strip() or "PROGRAM_2", p2_col),
+    (p3_name.strip() or "PROGRAM_3", p3_col),
+    (p4_name.strip() or "PROGRAM_4", p4_col),
+]
+
+# Guard: duplicate column choices
+chosen_cols = [c for _, c in programs]
+if len(set(chosen_cols)) < len(chosen_cols):
+    st.warning("You selected the same column for multiple programs. That will distort results.")
+
+# Build boolean table for structured programs
+prog = pd.DataFrame({name: to_bool_series(df[col]) for name, col in programs})
+
+# Aggregate to unique child if ID selected
+if use_id:
+    prog_by = prog.groupby(df[id_col]).max()
+    base_df = df.drop_duplicates(subset=[id_col]).set_index(id_col)
+    n_total = len(prog_by)
+else:
+    prog_by = prog
+    base_df = df
+    n_total = len(df)
+
+# Structured metrics
+n_any = int(prog_by.any(axis=1).sum())
+n_each = prog_by.sum().astype(int)
+
+n_programs = prog_by.sum(axis=1)
+dist = n_programs.value_counts().reindex([0, 1, 2, 3, 4], fill_value=0).astype(int)
+
+only_one_mask = (n_programs == 1)
+only_one_by_program = prog_by[only_one_mask].sum().astype(int)
+
+# Combination counts for structured programs only
+def combo_label(row: pd.Series) -> str:
+    picked = [k for k, v in row.items() if bool(v)]
+    return "NONE" if not picked else "+".join(picked)
+
+combo_series = prog_by.apply(combo_label, axis=1)
+structured_combo_df = combo_series.value_counts().reset_index()
+structured_combo_df.columns = ["Combination", "Count"]
+
+# Export rows selector (structured-based)
+st.subheader("Export rows (based on structured programs)")
+
+export_mode = st.selectbox(
+    "Choose which rows to export",
+    [
+        "All rows",
+        "Only children with at least 1 structured program",
+        "Only children with 0 structured programs",
+        "Only children with 2+ structured programs",
+        "Only children with exactly 1 structured program",
+    ],
+)
+
+if export_mode == "All rows":
+    export_mask = pd.Series([True] * len(prog_by), index=prog_by.index)
+elif export_mode == "Only children with at least 1 structured program":
+    export_mask = n_programs >= 1
+elif export_mode == "Only children with 0 structured programs":
+    export_mask = n_programs == 0
+elif export_mode == "Only children with 2+ structured programs":
+    export_mask = n_programs >= 2
+else:
+    export_mask = n_programs == 1
+
+# Build export rows DF with safe helper column names
+export_prog = prog_by.copy()
+export_prog["__Structured_Programs_Count"] = n_programs
+export_prog["__Structured_Combination"] = combo_series
+
+if use_id:
+    export_rows = base_df.join(export_prog, how="left").loc[export_mask].reset_index()
+else:
+    export_rows = pd.concat([base_df.reset_index(drop=True), export_prog.reset_index(drop=True)], axis=1)
+    export_rows = export_rows.loc[export_mask.reset_index(drop=True)].copy()
+
+export_rows.columns = make_unique_columns(export_rows.columns)
+
+# ===============================
+# SAFE FAMILIES (separate program)
+# ===============================
+st.subheader("Safe Families (separate, NOT included in structured calculations)")
+
+sf_default = "SF + JSWP Completed (5)"
+sf_options = df.columns.tolist()
+sf_index = sf_options.index(sf_default) if sf_default in sf_options else 0
+sf_column = st.selectbox("Safe Families column", sf_options, index=sf_index)
+
+sf_bool = to_bool_series(df[sf_column])
+
+if use_id:
+    sf_by = sf_bool.groupby(df[id_col]).max()
+    sf_total = int(len(sf_by))
+    sf_completed = int(sf_by.sum())
+else:
+    sf_total = int(len(sf_bool))
+    sf_completed = int(sf_bool.sum())
+
+sf_rate = (sf_completed / sf_total * 100) if sf_total > 0 else 0.0
+
+sf_c1, sf_c2, sf_c3 = st.columns(3)
+sf_c1.metric("Total children", f"{sf_total:,}")
+sf_c2.metric("Safe Families: completed", f"{sf_completed:,}")
+sf_c3.metric("Safe Families: completion rate", f"{sf_rate:.2f}%")
+
+safe_families_df = pd.DataFrame(
+    [
+        ["Safe Families column used", sf_column],
+        ["Total children (Safe Families)", sf_total],
+        ["Completed (Safe Families)", sf_completed],
+        ["Completion rate (%)", round(sf_rate, 2)],
+    ],
+    columns=["Metric", "Value"],
+)
+
+
+# ===============================
+# SAFE FAMILIES: Monthly achievements by gender
+# Completed (Yes/No) in BA
+# Completion Date in BB (MMDDYYYY)
+# Gender in U (gender: boy/girl)
+# ===============================
+
+st.subheader("Safe Families: monthly achievements by gender")
+
+def parse_mixed_date(series: pd.Series) -> pd.Series:
+    """Handles Excel datetimes, M/D/YYYY strings, and MMDDYYYY strings."""
+    s = series.copy()
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return s
+    s = s.astype("string").str.strip()
+    dt1 = pd.to_datetime(s, errors="coerce", dayfirst=False)  # e.g., 9/4/2025
+    mask8 = s.str.fullmatch(r"\d{8}", na=False)               # e.g., 09042025 (MMDDYYYY)
+    dt2 = pd.to_datetime(s.where(mask8), format="%m%d%Y", errors="coerce")
+    return dt1.fillna(dt2)
+
+def excel_col_to_index(excel_col: str) -> int:
+    excel_col = excel_col.upper().strip()
+    n = 0
+    for ch in excel_col:
+        n = n * 26 + (ord(ch) - ord("A") + 1)
+    return n - 1  # A->0
+
+def default_col_by_letter(letter: str) -> str:
+    i = excel_col_to_index(letter)
+    return df.columns[i] if 0 <= i < len(df.columns) else df.columns[0]
+
+# Defaults by letters as you specified
+sf_completed_col = st.selectbox(
+    "Safe Families Completed (BA)",
+    df.columns.tolist(),
+    index=df.columns.tolist().index(default_col_by_letter("BA"))
+)
+sf_date_col = st.selectbox(
+    "Safe Families completion date (BB, MMDDYYYY)",
+    df.columns.tolist(),
+    index=df.columns.tolist().index(default_col_by_letter("BB"))
+)
+gender_col = st.selectbox(
+    "Gender column (U)",
+    df.columns.tolist(),
+    index=df.columns.tolist().index(default_col_by_letter("U"))
+)
+
+sf_done = to_bool_series(df[sf_completed_col])
+sf_dt = parse_mixed_date(df[sf_date_col]).where(sf_done)
+
+g = df[gender_col].astype("string").str.strip().str.lower()
+g = g.where(g.isin(["boy", "girl"]), "unknown")
+
+# If ID selected (optional): count unique children by earliest SF date
+if use_id:
+    tmp = pd.DataFrame({
+        "_id": df[id_col],
+        "_sf_dt": sf_dt,
+        "_gender": g
+    }).dropna(subset=["_sf_dt"])
+
+    tmp = tmp.sort_values(["_id", "_sf_dt"])
+    first = tmp.groupby("_id").first()  # earliest SF per child
+
+    sf_dt_in = first["_sf_dt"]
+    g_in = first["_gender"].astype("string").where(first["_gender"].isin(["boy", "girl"]), "unknown")
+else:
+    sf_dt_in = sf_dt.dropna()
+    g_in = g.loc[sf_dt_in.index].astype("string").where(g.loc[sf_dt_in.index].isin(["boy", "girl"]), "unknown")
+
+monthly_gender = (
+    pd.DataFrame({
+        "Month": sf_dt_in.dt.to_period("M").astype(str),
+        "Gender": g_in
+    })
+    .value_counts()
+    .reset_index(name="Count")
+    .sort_values(["Month", "Gender"])
+)
+
+monthly_gender_pivot = (
+    monthly_gender.pivot(index="Month", columns="Gender", values="Count")
+    .fillna(0)
+    .astype(int)
+    .reset_index()
+)
+
+c1, c2 = st.columns(2)
+c1.metric("Safe Families completed (total)", f"{int(sf_done.sum() if not use_id else len(sf_dt_in)):,}")
+c2.metric("Completed=yes but date missing", f"{int((sf_done & parse_mixed_date(df[sf_date_col]).isna()).sum()):,}")
+
+st.dataframe(monthly_gender_pivot, use_container_width=True)
+
+st.download_button(
+    "Download Safe Families monthly by gender (CSV)",
+    data=monthly_gender_pivot.to_csv(index=False).encode("utf-8"),
+    file_name="safe_families_monthly_by_gender.csv",
+    mime="text/csv",
+)
+
+
+# ===============================
+# ADDITIONAL SESSIONS (counts)
+# ===============================
+st.subheader("Additional sessions (separate from structured & Safe Families)")
+
+def pick_col(label: str, default_name: str) -> str:
+    opts = df.columns.tolist()
+    idx = opts.index(default_name) if default_name in opts else 0
+    return st.selectbox(label, opts, index=idx)
+
+rec_col = pick_col("Recreational Activity column", "Recreational Activity")
+infedu_col = pick_col("Informal Education Activity column", "Informal Education Activity")
+eore_col = pick_col("EORE column", "EORE")
+
+rec_n = to_num(df[rec_col])
+infedu_n = to_num(df[infedu_col])
+eore_n = to_num(df[eore_col])
+
+if use_id:
+    # if multiple rows per child, take max sessions per child (conservative)
+    rec_by = rec_n.groupby(df[id_col]).max()
+    infedu_by = infedu_n.groupby(df[id_col]).max()
+    eore_by = eore_n.groupby(df[id_col]).max()
+    add_total = int(len(rec_by))
+else:
+    rec_by = rec_n
+    infedu_by = infedu_n
+    eore_by = eore_n
+    add_total = int(len(df))
+
+rec_attended = int((rec_by > 0).sum())
+infedu_attended = int((infedu_by > 0).sum())
+eore_attended = int((eore_by > 0).sum())
+
+rec_sessions_total = float(rec_by.sum())
+infedu_sessions_total = float(infedu_by.sum())
+eore_sessions_total = float(eore_by.sum())
+
+a1, a2, a3 = st.columns(3)
+a1.metric("Attended Recreational Activity (children)", f"{rec_attended:,}")
+a2.metric("Attended Informal Education (children)", f"{infedu_attended:,}")
+a3.metric("Attended EORE (children)", f"{eore_attended:,}")
+
+with st.expander("Additional sessions details", expanded=False):
+    st.write(
+        {
+            "Total children considered": add_total,
+            
+        }
+    )
+
+additional_sessions_df = pd.DataFrame(
+    [
+        ["Recreational Activity column used", rec_col],
+        ["Children attended Recreational (value > 0)", rec_attended],
+        ["Total Recreational sessions (sum)", rec_sessions_total],
+        ["Informal Education column used", infedu_col],
+        ["Children attended Informal Education (value > 0)", infedu_attended],
+        ["Total Informal Education sessions (sum)", infedu_sessions_total],
+        ["EORE column used", eore_col],
+        ["Children attended EORE (value > 0)", eore_attended],
+        ["Total EORE sessions (sum)", eore_sessions_total],
+    ],
+    columns=["Metric", "Value"],
+)
+
+# ---- Display structured results
+st.subheader("Structured results")
+
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Total children", f"{n_total:,}")
+c2.metric("At least 1 structured program", f"{n_any:,}")
+c3.metric("0 structured programs", f"{int(dist[0]):,}")
+c4.metric("2+ structured programs", f"{int(dist[2] + dist[3] + dist[4]):,}")
+
+structured_summary_df = pd.DataFrame(
+    [
+        ["Total children", n_total],
+        ["At least 1 structured program", n_any],
+        ["0 structured programs", int(dist[0])],
+        ["1 structured program", int(dist[1])],
+        ["2 structured programs", int(dist[2])],
+        ["3 structured programs", int(dist[3])],
+        ["4 structured programs", int(dist[4])],
+    ],
+    columns=["Metric", "Value"],
+)
+
+structured_per_program_df = n_each.reset_index()
+structured_per_program_df.columns = ["Program", "Children"]
+
+structured_only_one_df = only_one_by_program.reset_index()
+structured_only_one_df.columns = ["Only this program", "Children"]
+
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["Structured Summary", "Per program", "Only one", "Combinations", "Export preview"]
+)
+
+with tab1:
+    st.dataframe(structured_summary_df, use_container_width=True)
+
+with tab2:
+    st.dataframe(structured_per_program_df, use_container_width=True)
+
+with tab3:
+    st.dataframe(structured_only_one_df, use_container_width=True)
+
+with tab4:
+    st.dataframe(structured_combo_df, use_container_width=True)
+
+with tab5:
+    st.caption(f"Export rows: {len(export_rows):,}")
+    st.dataframe(export_rows.head(50), use_container_width=True)
+
+# ---- Downloads
+st.subheader("Downloads")
+
+report_bytes = build_report_excel(
+    structured_summary_df=structured_summary_df,
+    structured_per_program_df=structured_per_program_df,
+    structured_only_one_df=structured_only_one_df,
+    structured_combo_df=structured_combo_df,
+    export_rows_df=export_rows,
+    safe_families_df=safe_families_df,
+    additional_sessions_df=additional_sessions_df,
+)
+
+st.download_button(
+    "Download report (Excel)",
+    data=report_bytes,
+    file_name="MEAL_Counter_Report.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
+
+st.download_button(
+    "Download export rows (CSV)",
+    data=export_rows.to_csv(index=False).encode("utf-8"),
+    file_name="MEAL_Counter_ExportRows.csv",
+    mime="text/csv",
+)
+
+# ===============================
+# INDICATOR:
+# # of individuals participating in child protection services
+# Logic: total sessions across ALL activities >= 2
+# Columns by Excel letters: AL, AO, AR, AU, AZ, BC, BD, BG
+# ===============================
+
+st.subheader("Indicator: # of individuals participating in child protection services (>=2 total sessions)")
+
+def excel_col_to_index(excel_col: str) -> int:
+    excel_col = excel_col.upper().strip()
+    n = 0
+    for ch in excel_col:
+        n = n * 26 + (ord(ch) - ord("A") + 1)
+    return n - 1  # A->0
+
+def default_col_by_letter(letter: str) -> str:
+    i = excel_col_to_index(letter)
+    return df.columns[i] if 0 <= i < len(df.columns) else df.columns[0]
+
+# auto-default to the columns you specified by Excel letters
+team_s_col   = st.selectbox("TEAM_UP sessions (AL)", df.columns.tolist(), index=df.columns.tolist().index(default_col_by_letter("AL")))
+heart_s_col  = st.selectbox("HEART sessions (AO)",   df.columns.tolist(), index=df.columns.tolist().index(default_col_by_letter("AO")))
+cyr_s_col    = st.selectbox("CYR sessions (AR)",     df.columns.tolist(), index=df.columns.tolist().index(default_col_by_letter("AR")))
+ismf_s_col   = st.selectbox("ISMF sessions (AU)",    df.columns.tolist(), index=df.columns.tolist().index(default_col_by_letter("AU")))
+sf_s_col     = st.selectbox("Safe Families sessions (AZ)", df.columns.tolist(), index=df.columns.tolist().index(default_col_by_letter("AZ")))
+rec_s_col    = st.selectbox("Recreational sessions (BC)",  df.columns.tolist(), index=df.columns.tolist().index(default_col_by_letter("BC")))
+infedu_s_col = st.selectbox("Informal Education sessions (BD)", df.columns.tolist(), index=df.columns.tolist().index(default_col_by_letter("BD")))
+eore_s_col   = st.selectbox("EORE sessions (BG)",     df.columns.tolist(), index=df.columns.tolist().index(default_col_by_letter("BG")))
+
+# numeric conversion (blanks/non-numeric -> 0)
+team_n   = to_num(df[team_s_col])
+heart_n  = to_num(df[heart_s_col])
+cyr_n    = to_num(df[cyr_s_col])
+ismf_n   = to_num(df[ismf_s_col])
+sf_n     = to_num(df[sf_s_col])
+rec_n    = to_num(df[rec_s_col])
+infedu_n = to_num(df[infedu_s_col])
+eore_n   = to_num(df[eore_s_col])
+
+# if ID selected: aggregate by child (sum sessions across rows)
+if use_id:
+    team_n   = team_n.groupby(df[id_col]).sum()
+    heart_n  = heart_n.groupby(df[id_col]).sum()
+    cyr_n    = cyr_n.groupby(df[id_col]).sum()
+    ismf_n   = ismf_n.groupby(df[id_col]).sum()
+    sf_n     = sf_n.groupby(df[id_col]).sum()
+    rec_n    = rec_n.groupby(df[id_col]).sum()
+    infedu_n = infedu_n.groupby(df[id_col]).sum()
+    eore_n   = eore_n.groupby(df[id_col]).sum()
+
+total_sessions = team_n + heart_n + cyr_n + ismf_n + sf_n + rec_n + infedu_n + eore_n
+indicator_mask = total_sessions >= 2
+
+
+
+indicator_total = int(indicator_mask.sum())
+indicator_total_children = int(len(total_sessions))
+indicator_rate = (indicator_total / indicator_total_children * 100) if indicator_total_children > 0 else 0.0
+
+i1, i2, i3 = st.columns(3)
+i1.metric("Children meeting indicator", f"{indicator_total:,}")
+i2.metric("Total children considered", f"{indicator_total_children:,}")
+i3.metric("Rate (%)", f"{indicator_rate:.2f}%")
+
+with st.expander("Indicator validation (breakdown)", expanded=False):
+    st.write({
+        "Children with 0 sessions": int((total_sessions == 0).sum()),
+        "Children with exactly 1 session": int((total_sessions == 1).sum()),
+        "Children with >=2 sessions": int((total_sessions >= 2).sum()),
+        "Average sessions per child": round(float(total_sessions.mean()), 2),
+        "Max sessions per child": float(total_sessions.max()),
+    })
+
+# optional: export list of children who meet indicator
+if st.checkbox("Enable export list: children meeting indicator (>=2 sessions)"):
+    if use_id:
+        ids = total_sessions[indicator_mask].index
+        export_indicator_df = df[df[id_col].isin(ids)].copy()
+    else:
+        export_indicator_df = df.loc[indicator_mask].copy()
+
+    export_indicator_df.to_csv  # keep for IDE hints
+    st.download_button(
+        "Download indicator children (CSV)",
+        data=export_indicator_df.to_csv(index=False).encode("utf-8"),
+        file_name="indicator_CP_services_children.csv",
+        mime="text/csv",
+    )
+
+
+
+# ===============================
+# Monthly achievements:
+# Indicator: # of children and adults who received structured MHPSS (first time)
+# Logic: count child in the month of their FIRST completed structured program (any of TEAM_UP/HEART/CYR/ISMF)
+# + breakdown by first program
+# + breakdown by gender (gender column = "gender", values: boy/girl)
+# ===============================
+
+st.subheader("Monthly achievements: Structured MHPSS indicator (first-time completion)")
+
+def pick_col_with_default(label: str, default_name: str):
+    opts = df.columns.tolist()
+    idx = opts.index(default_name) if default_name in opts else 0
+    return st.selectbox(label, opts, index=idx)
+
+def parse_mixed_date(series: pd.Series) -> pd.Series:
+    """
+    Handles:
+    - real Excel datetime values
+    - strings like 9/4/2025 (month/day/year)
+    - strings like 09042025 (MMDDYYYY)
+    """
+    s = series.copy()
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return s
+    s = s.astype("string").str.strip()
+
+    # 9/4/2025 etc
+    dt1 = pd.to_datetime(s, errors="coerce", dayfirst=False)
+
+    # 09042025 etc (MMDDYYYY)
+    mask8 = s.str.fullmatch(r"\d{8}", na=False)
+    dt2 = pd.to_datetime(s.where(mask8), format="%m%d%Y", errors="coerce")
+
+    return dt1.fillna(dt2)
+
+# ---- Column selection (auto-defaults by exact names)
+team_completed_col = pick_col_with_default("TEAM_UP Completed column", "TEAM_UP Completed")
+team_date_col      = pick_col_with_default("TEAM_UP completion date column", "TEAM_UP Completed (12) Date")
+
+heart_completed_col = pick_col_with_default("HEART Completed column", "HEART Completed")
+heart_date_col      = pick_col_with_default("HEART completion date column", "HEART Completed (10) Date")
+
+cyr_completed_col = pick_col_with_default("CYR Completed column", "CYR Completed")
+cyr_date_col      = pick_col_with_default("CYR completion date column", "CYR Completed (10) Date")
+
+ismf_completed_col = pick_col_with_default("ISMF Completed column", "ISMF Completed")
+ismf_date_col      = pick_col_with_default("ISMF completion date column", "ISMF Completed (10) Date")
+
+gender_col = pick_col_with_default("Gender column", "gender")
+
+# ---- Completed flags
+team_done  = to_bool_series(df[team_completed_col])
+heart_done = to_bool_series(df[heart_completed_col])
+cyr_done   = to_bool_series(df[cyr_completed_col])
+ismf_done  = to_bool_series(df[ismf_completed_col])
+
+# ---- Dates (only where completed==yes)
+team_dt  = parse_mixed_date(df[team_date_col]).where(team_done)
+heart_dt = parse_mixed_date(df[heart_date_col]).where(heart_done)
+cyr_dt   = parse_mixed_date(df[cyr_date_col]).where(cyr_done)
+ismf_dt  = parse_mixed_date(df[ismf_date_col]).where(ismf_done)
+
+dates_df = pd.DataFrame({
+    "TEAM_UP": team_dt,
+    "HEART": heart_dt,
+    "CYR": cyr_dt,
+    "ISMF": ismf_dt,
+})
+
+# earliest date among the 4 (per row)
+first_dt_row = dates_df.min(axis=1)
+
+# which program was first (ties: first in column order)
+first_program_row = dates_df.eq(first_dt_row, axis=0).idxmax(axis=1)
+first_program_row = first_program_row.where(first_dt_row.notna())
+
+# ---- If ID selected: earliest per child + keep program for that earliest
+if use_id:
+    tmp = pd.DataFrame({
+        "_id": df[id_col],
+        "first_dt": first_dt_row,
+        "first_program": first_program_row,
+        "gender": df[gender_col].astype("string").str.strip().str.lower(),
+    })
+
+    tmp["gender"] = tmp["gender"].where(tmp["gender"].isin(["boy", "girl"]), "unknown")
+
+    # keep only rows with a first_dt
+    tmp = tmp.dropna(subset=["first_dt"]).sort_values(["_id", "first_dt"])
+
+    # earliest per child (and gender from that earliest row)
+    tmp_first = tmp.groupby("_id").first()
+
+    first_dt = tmp_first["first_dt"]
+    first_program = tmp_first["first_program"]
+    gender_for_first = tmp_first["gender"]
+
+else:
+    first_dt = first_dt_row
+    first_program = first_program_row
+    gender_for_first = df[gender_col].astype("string").str.strip().str.lower()
+    gender_for_first = gender_for_first.where(gender_for_first.isin(["boy", "girl"]), "unknown")
+
+# ---- Monthly total (unique children by first month)
+monthly = (
+    first_dt.dropna()
+    .dt.to_period("M")
+    .value_counts()
+    .sort_index()
+    .rename_axis("Month")
+    .reset_index(name="First-time structured completions")
+)
+
+# ---- Monthly by first program
+monthly_by_program = (
+    pd.DataFrame({
+        "Month": first_dt.dropna().dt.to_period("M").astype(str),
+        "Program": first_program.loc[first_dt.dropna().index].astype("string"),
+    })
+    .value_counts()
+    .reset_index(name="Count")
+    .sort_values(["Month", "Program"])
+)
+
+# ---- Monthly by gender
+mg = pd.DataFrame({
+    "Month": first_dt.dropna().dt.to_period("M").astype(str),
+    "Gender": gender_for_first.loc[first_dt.dropna().index].astype("string"),
+})
+monthly_by_gender_long = (
+    mg.value_counts()
+    .reset_index(name="Count")
+    .sort_values(["Month", "Gender"])
+)
+monthly_by_gender_pivot = (
+    monthly_by_gender_long.pivot(index="Month", columns="Gender", values="Count")
+    .fillna(0)
+    .astype(int)
+    .reset_index()
+)
+
+# ---- Tabs
+tab1, tab2, tab3 = st.tabs(["Monthly total", "Monthly by first program", "Monthly by gender"])
+
+with tab1:
+    st.dataframe(monthly, use_container_width=True)
+
+with tab2:
+    st.dataframe(monthly_by_program, use_container_width=True)
+
+with tab3:
+    st.dataframe(monthly_by_gender_pivot, use_container_width=True)
+
+# ---- QA counters
+qa1, qa2, qa3 = st.columns(3)
+
+qa1.metric("Total first-time structured (all time)", f"{int(first_dt.dropna().shape[0]):,}")
+
+missing_date_count = int(
+    ((team_done & parse_mixed_date(df[team_date_col]).isna()) |
+     (heart_done & parse_mixed_date(df[heart_date_col]).isna()) |
+     (cyr_done & parse_mixed_date(df[cyr_date_col]).isna()) |
+     (ismf_done & parse_mixed_date(df[ismf_date_col]).isna()))
+    .sum()
+)
+qa2.metric("Completed=yes but date missing (any program)", f"{missing_date_count:,}")
+
+qa3.metric("Children with no structured completion", f"{int(first_dt.isna().sum()):,}")
+
+# ---- Downloads
+st.download_button(
+    "Download monthly totals (CSV)",
+    data=monthly.to_csv(index=False).encode("utf-8"),
+    file_name="structured_mhpss_first_time_monthly.csv",
+    mime="text/csv",
+)
+
+st.download_button(
+    "Download monthly by first program (CSV)",
+    data=monthly_by_program.to_csv(index=False).encode("utf-8"),
+    file_name="structured_mhpss_first_time_monthly_by_program.csv",
+    mime="text/csv",
+)
+
+st.download_button(
+    "Download monthly by gender (CSV)",
+    data=monthly_by_gender_pivot.to_csv(index=False).encode("utf-8"),
+    file_name="structured_mhpss_first_time_monthly_by_gender.csv",
+    mime="text/csv",
+)
+
+# ---- Optional: export list for a chosen month (with first date/program/gender)
+if len(monthly) > 0:
+    month_options = monthly["Month"].astype(str).tolist()
+    sel_month = st.selectbox("Export list for month", month_options)
+    sel_period = pd.Period(sel_month, freq="M")
+
+    if use_id:
+        ids_in_month = first_dt[first_dt.dt.to_period("M") == sel_period].index
+        export_list = df[df[id_col].isin(ids_in_month)].copy()
+
+        # map per-child values back to rows
+        export_list["__First_Structured_Date"] = export_list[id_col].map(first_dt.to_dict())
+        export_list["__First_Structured_Program"] = export_list[id_col].map(first_program.to_dict())
+        export_list["__Gender_First_Row"] = export_list[id_col].map(gender_for_first.to_dict())
+    else:
+        mask = first_dt.dt.to_period("M") == sel_period
+        export_list = df.loc[mask].copy()
+        export_list["__First_Structured_Date"] = first_dt[mask].values
+        export_list["__First_Structured_Program"] = first_program[mask].values
+        export_list["__Gender"] = gender_for_first[mask].values
+
+    export_list.columns = make_unique_columns(export_list.columns)
+
+    st.download_button(
+        "Download list for selected month (CSV)",
+        data=export_list.to_csv(index=False).encode("utf-8"),
+        file_name=f"structured_mhpss_first_time_list_{sel_month}.csv",
+        mime="text/csv",
+    )
