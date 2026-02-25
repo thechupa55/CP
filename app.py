@@ -18,6 +18,7 @@ from core import (
     cp_services_indicator_monthly_core,
     disability_gender_core,
     geography_analysis_core,
+    idp_status_gender_core,
     safe_families_monthly_gender_adult_core,
     safe_families_monthly_gender_core,
     structured_core,
@@ -310,7 +311,7 @@ def main():
     # =============================
     # Tabs
     # =============================
-    tab_preview, tab_indicators, tab_cp, tab_struct, tab_struct_month, tab_sf_month, tab_geo, tab_disability, tab_downloads = st.tabs(
+    tab_preview, tab_indicators, tab_cp, tab_struct, tab_struct_month, tab_sf_month, tab_geo, tab_disability, tab_idp, tab_downloads = st.tabs(
         [
             "Preview",
             "Indicators",
@@ -320,6 +321,7 @@ def main():
             "Safe Families Monthly",
             "Geography",
             "Disability",
+            "Status IDP",
             "Downloads",
         ]
     )
@@ -1618,6 +1620,25 @@ def main():
         d1.metric("Children considered", f"{dis['n_total']:,}")
         d2.metric("Unique disability statuses", f"{len(dis['total_by_disability']):,}")
 
+        dis_yes = dis["by_disability_gender"].copy()
+        dis_yes["__status_norm"] = dis_yes["Disability status"].astype("string").str.strip().str.casefold()
+        dis_yes_row = dis_yes[dis_yes["__status_norm"] == "yes"]
+        if dis_yes_row.empty:
+            yes_boy = yes_girl = yes_unknown = yes_total = 0
+        else:
+            yes_row = dis_yes_row.iloc[0]
+            yes_boy = int(yes_row.get("boy", 0))
+            yes_girl = int(yes_row.get("girl", 0))
+            yes_unknown = int(yes_row.get("unknown", 0))
+            yes_total = int(yes_row.get("Total", yes_boy + yes_girl + yes_unknown))
+
+        st.caption("Disability = yes breakdown")
+        dy1, dy2, dy3, dy4 = st.columns(4)
+        dy1.metric("boy", f"{yes_boy:,}")
+        dy2.metric("girl", f"{yes_girl:,}")
+        dy3.metric("total", f"{yes_total:,}")
+        dy4.metric("unknown", f"{yes_unknown:,}")
+
         dt1, dt2 = st.tabs(["Total by disability status", "Disability by gender"])
         with dt1:
             st.dataframe(dis["total_by_disability"], use_container_width=True)
@@ -1642,6 +1663,95 @@ def main():
             "total": dis["total_by_disability"],
             "by_gender": dis["by_disability_gender"],
         }
+
+    # -----------------------------
+    # Status IDP
+    # -----------------------------
+    with tab_idp:
+        st.subheader("Status IDP analysis")
+        st.caption("Default mapping from source file: V = Status IDP, U = Gender")
+        st.caption("Filter rule: only children meeting CP indicator (>=2 total sessions).")
+
+        idp_col_left, idp_col_right = st.columns(2)
+        with idp_col_left:
+            idp_status_col = pick_col_with_default(
+                df,
+                "Status IDP column",
+                "Status IDP",
+                key=f"idp_status__{sheet}",
+            )
+        with idp_col_right:
+            idp_gender_col = pick_col_with_default(
+                df,
+                "Gender column",
+                "Gender",
+                key=f"idp_gender__{sheet}",
+            )
+
+        idp_team_col = _get_selected_col(df.columns.tolist(), f"cp_team__{sheet}", CP_SERVICE_DEFAULT_NAMES["TEAM_UP"])
+        idp_heart_col = _get_selected_col(df.columns.tolist(), f"cp_heart__{sheet}", CP_SERVICE_DEFAULT_NAMES["HEART"])
+        idp_cyr_col = _get_selected_col(df.columns.tolist(), f"cp_cyr__{sheet}", CP_SERVICE_DEFAULT_NAMES["CYR"])
+        idp_ismf_col = _get_selected_col(df.columns.tolist(), f"cp_ismf__{sheet}", CP_SERVICE_DEFAULT_NAMES["ISMF"])
+        idp_sf_col = _get_selected_col(df.columns.tolist(), f"cp_sf__{sheet}", CP_SERVICE_DEFAULT_NAMES["SAFE_FAMILIES"])
+        idp_rec_col = _get_selected_col(df.columns.tolist(), f"cp_rec__{sheet}", CP_SERVICE_DEFAULT_NAMES["RECREATIONAL"])
+        idp_infedu_col = _get_selected_col(df.columns.tolist(), f"cp_infedu__{sheet}", CP_SERVICE_DEFAULT_NAMES["INFORMAL_EDU"])
+        idp_eore_col = _get_selected_col(df.columns.tolist(), f"cp_eore__{sheet}", CP_SERVICE_DEFAULT_NAMES["EORE"])
+
+        idp_total_sessions, idp_indicator_mask = cp_services_indicator_core(
+            df,
+            use_id,
+            id_col,
+            idp_team_col,
+            idp_heart_col,
+            idp_cyr_col,
+            idp_ismf_col,
+            idp_sf_col,
+            idp_rec_col,
+            idp_infedu_col,
+            idp_eore_col,
+        )
+        if use_id:
+            idp_ids = idp_total_sessions[idp_indicator_mask].index
+            idp_source_df = df[df[id_col].isin(idp_ids)].copy()
+        else:
+            idp_source_df = df.loc[idp_indicator_mask].copy()
+
+        idp = idp_status_gender_core(
+            idp_source_df,
+            use_id,
+            id_col,
+            idp_status_col,
+            idp_gender_col,
+        )
+
+        i1, i2 = st.columns(2)
+        i1.metric("Children considered", f"{idp['n_total']:,}")
+        i2.metric("Unique IDP statuses", f"{len(idp['total_by_status']):,}")
+
+        it1, it2 = st.tabs(["Total by Status IDP", "Status IDP by gender"])
+        with it1:
+            st.dataframe(idp["total_by_status"], use_container_width=True)
+            st.download_button(
+                "Download IDP status totals (CSV)",
+                data=idp["total_by_status"].to_csv(index=False).encode("utf-8"),
+                file_name="idp_status_total.csv",
+                mime="text/csv",
+                key="dl_idp_total",
+            )
+        with it2:
+            st.dataframe(idp["by_status_gender"], use_container_width=True)
+            st.download_button(
+                "Download IDP status by gender (CSV)",
+                data=idp["by_status_gender"].to_csv(index=False).encode("utf-8"),
+                file_name="idp_status_by_gender.csv",
+                mime="text/csv",
+                key="dl_idp_gender",
+            )
+
+        st.session_state["idp_cached"] = {
+            "total": idp["total_by_status"],
+            "by_gender": idp["by_status_gender"],
+        }
     
     # -----------------------------
     # Downloads
@@ -1654,6 +1764,7 @@ def main():
         sf_adult_cached = st.session_state.get("safe_families_adult_cached")
         geo_cached = st.session_state.get("geography_cached")
         disability_cached = st.session_state.get("disability_cached")
+        idp_cached = st.session_state.get("idp_cached")
     
         if not structured_cached:
             st.warning("Open the 'Structured' tab once to generate structured tables for the Excel report.")
@@ -1665,6 +1776,8 @@ def main():
             st.info("If you want Geography tables included in the Excel report, open 'Geography' tab once.")
         if not disability_cached:
             st.info("If you want Disability tables included in the Excel report, open 'Disability' tab once.")
+        if not idp_cached:
+            st.info("If you want Status IDP tables included in the Excel report, open 'Status IDP' tab once.")
     
         sheets = {}
     
@@ -1702,6 +1815,9 @@ def main():
         if disability_cached:
             sheets["Disability_Total"] = disability_cached["total"]
             sheets["Disability_By_Gender"] = disability_cached["by_gender"]
+        if idp_cached:
+            sheets["IDP_Status_Total"] = idp_cached["total"]
+            sheets["IDP_Status_By_Gender"] = idp_cached["by_gender"]
     
         if sheets:
             report_bytes = build_report_excel(sheets)

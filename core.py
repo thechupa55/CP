@@ -200,7 +200,7 @@ def structured_monthly_first_time_core(
         + monthly_by_program_gender_pivot["unknown"]
     )
     monthly_by_program_gender_pivot = monthly_by_program_gender_pivot[
-        ["Month", "Program", "boy", "girl", "Total", "unknown"]
+        ["Month", "Program", "girl", "boy", "Total", "unknown"]
     ]
 
     mg = pd.DataFrame(
@@ -226,7 +226,7 @@ def structured_monthly_first_time_core(
         + monthly_by_gender_pivot["unknown"]
     )
     monthly_by_gender_pivot = monthly_by_gender_pivot[
-        ["Month", "boy", "girl", "Total", "unknown"]
+        ["Month", "girl", "boy", "Total", "unknown"]
     ]
 
     missing_date_count = int(
@@ -383,7 +383,7 @@ def cp_services_indicator_monthly_core(
         + monthly_by_gender_pivot["unknown"]
     )
     monthly_by_gender_pivot = monthly_by_gender_pivot[
-        ["Month", "boy", "girl", "Total", "unknown"]
+        ["Month", "girl", "boy", "Total", "unknown"]
     ]
 
     first_meta = pd.DataFrame(
@@ -678,7 +678,7 @@ def disability_gender_core(
     if "unknown" not in by_disability_gender.columns:
         by_disability_gender["unknown"] = 0
 
-    by_disability_gender = by_disability_gender[["Disability status", "boy", "girl", "unknown"]]
+    by_disability_gender = by_disability_gender[["Disability status", "girl", "boy", "unknown"]]
     by_disability_gender["Total"] = (
         by_disability_gender["boy"] + by_disability_gender["girl"] + by_disability_gender["unknown"]
     )
@@ -690,6 +690,85 @@ def disability_gender_core(
         "n_total": int(len(base)),
         "total_by_disability": total_by_disability,
         "by_disability_gender": by_disability_gender,
+    }
+
+
+def idp_status_gender_core(
+    df: pd.DataFrame,
+    use_id: bool,
+    id_col: str,
+    status_col: str,
+    gender_col: str,
+):
+    def normalize_text(series: pd.Series) -> pd.Series:
+        s = series.astype("string").str.strip()
+        return s.where(s.notna() & s.ne(""), "Unknown")
+
+    status = normalize_text(df[status_col]).str.lower()
+    status = status.where(status.isin(["local", "idp", "returnee"]), "unknown")
+    gender = normalize_text(df[gender_col]).str.lower()
+    gender = gender.where(gender.isin(["boy", "girl"]), "unknown")
+
+    base = pd.DataFrame(
+        {
+            "Status IDP": status,
+            "Gender": gender,
+        }
+    )
+
+    if use_id:
+        tmp = base.copy()
+        tmp["_id"] = df[id_col]
+        tmp = tmp[tmp["_id"].notna()].copy()
+        base = (
+            tmp.groupby("_id")
+            .agg(
+                {
+                    "Status IDP": lambda s: normalize_text(s).str.lower().iloc[0],
+                    "Gender": lambda s: normalize_text(s).str.lower().iloc[0],
+                }
+            )
+            .reset_index(drop=True)
+        )
+        base["Status IDP"] = base["Status IDP"].where(base["Status IDP"].isin(["local", "idp", "returnee"]), "unknown")
+        base["Gender"] = base["Gender"].where(base["Gender"].isin(["boy", "girl"]), "unknown")
+
+    total_by_status = (
+        base["Status IDP"]
+        .value_counts()
+        .rename_axis("Status IDP")
+        .reset_index(name="Children")
+        .sort_values(["Children", "Status IDP"], ascending=[False, True])
+        .reset_index(drop=True)
+    )
+
+    by_status_gender = (
+        base.groupby(["Status IDP", "Gender"]).size().reset_index(name="Children")
+        .pivot(index="Status IDP", columns="Gender", values="Children")
+        .fillna(0)
+        .astype(int)
+        .reset_index()
+    )
+
+    if "boy" not in by_status_gender.columns:
+        by_status_gender["boy"] = 0
+    if "girl" not in by_status_gender.columns:
+        by_status_gender["girl"] = 0
+    if "unknown" not in by_status_gender.columns:
+        by_status_gender["unknown"] = 0
+
+    by_status_gender = by_status_gender[["Status IDP", "girl", "boy", "unknown"]]
+    by_status_gender["Total"] = (
+        by_status_gender["boy"] + by_status_gender["girl"] + by_status_gender["unknown"]
+    )
+    by_status_gender = by_status_gender.sort_values(
+        ["Total", "Status IDP"], ascending=[False, True]
+    ).reset_index(drop=True)
+
+    return {
+        "n_total": int(len(base)),
+        "total_by_status": total_by_status,
+        "by_status_gender": by_status_gender,
     }
 
 
@@ -739,7 +818,7 @@ def safe_families_monthly_gender_core(
         + monthly_gender_pivot["unknown"]
     )
     monthly_gender_pivot = monthly_gender_pivot[
-        ["Month", "boy", "girl", "Total", "unknown"]
+        ["Month", "girl", "boy", "Total", "unknown"]
     ]
     missing_dates = int((sf_done & sf_dt.isna()).sum())
 
