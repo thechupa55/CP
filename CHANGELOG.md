@@ -4,7 +4,42 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
-No pending entries.
+### Added
+- Added `Indicator Monthly` tab (right after `Indicators`) with monthly breakdown tables for all 3 headline indicators.
+- Added transposed monthly layout in `Indicator Monthly`:
+  - rows: `# of girls`, `# of boys`, `# of women`, `# of men`, `total`
+  - month columns + `Overall` summary column.
+- Extended child CP services programs in CP indicator logic and UI:
+  - added `SEL`, `SOCR`, `GBV`, `LA`
+  - kept `EORE` and updated expected column order.
+- Added adult CP third program mapping:
+  - `Adult Youth Resilience sessions column`.
+- Added robust file-switch state reset for mapping keys to avoid stale mappings after switching between different Excel files.
+- Added deterministic date parsing order in `parse_mixed_date` (`utils.py`) before generic fallback.
+- Added reproducible dependency lockfile:
+  - `requirements.lock`
+  - README section for lockfile setup.
+- Added lint/typecheck commands to README and added tools to dependencies:
+  - `ruff`
+  - `mypy`.
+
+### Changed
+- Updated app title from `MEAL Counter Tool v1` to `MEAL Counter Tool v2`.
+- Standardized many column selectors to `pick_col_with_default(...)` and unified empty-selection policy.
+- Improved fallback behavior: if default column is not found, selectors now use explicit empty option instead of silently picking first column.
+- Changed adult Youth Resilience default mapping target to `Unstructured MHPSS Activities Youth Resilience` (with fallback compatibility).
+- Reworded structured indicator labels to reflect current implemented scope (children).
+
+### Fixed
+- Fixed Streamlit session-state warning in structured tab caused by selectbox `index` + explicit state assignment conflict.
+- Fixed adults not appearing in CP monthly totals in `Indicator Monthly` by including unknown-gender counts in `total`.
+- Fixed repeated heavy calculations across tabs by introducing per-rerun memoization wrappers in `app.py`.
+- Fixed potential crashes when mapped columns are empty/unavailable by adding safe column accessors in `core.py`.
+- Removed pollution of source dataframes by no longer adding `EMPTY_COL_OPTION` as a physical column.
+
+### Quality
+- Added dependency upper bounds in `requirements.txt`.
+- Improved local quality workflow with `pytest`, `ruff`, and `mypy` execution paths documented in README.
 
 ## [1.3.0] - 2026-02-25
 
