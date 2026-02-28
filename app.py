@@ -59,17 +59,16 @@ def _find_default_index(options: list[str], default_name: str) -> int:
 
 
 def pick_col_with_default(df: pd.DataFrame, label: str, default_name: str, key: str | None = None):
-    opts = df.columns.tolist()
+    real_opts = df.columns.tolist()
+    opts = [EMPTY_COL_OPTION] + real_opts
     idx = _find_default_index(opts, default_name)
     has_valid_state = False
     if key:
         selected = st.session_state.get(key)
         if not (isinstance(selected, str) and selected in opts):
-            resolved = _resolve_col_name(opts, default_name)
-            if resolved is None and EMPTY_COL_OPTION in opts:
+            resolved = _resolve_col_name(real_opts, default_name)
+            if resolved is None:
                 resolved = EMPTY_COL_OPTION
-            elif resolved is None and opts:
-                resolved = opts[idx]
             if resolved is not None:
                 st.session_state[key] = resolved
         selected_after = st.session_state.get(key)
@@ -253,28 +252,12 @@ def render_indicator_banner(label: str, value: int, theme_mode: str):
 
 def _get_selected_col(options: list[str], state_key: str, default_name: str) -> str:
     selected = st.session_state.get(state_key)
-    if isinstance(selected, str) and selected in options:
+    if isinstance(selected, str) and (selected == EMPTY_COL_OPTION or selected in options):
         return selected
     resolved = _resolve_col_name(options, default_name)
     if resolved is not None:
         return resolved
-    if EMPTY_COL_OPTION in options:
-        return EMPTY_COL_OPTION
-    idx = _find_default_index(options, default_name)
-    return options[idx] if options else ""
-
-
-def _ensure_selected_col_state(options: list[str], state_key: str, default_name: str):
-    selected = st.session_state.get(state_key)
-    if isinstance(selected, str) and selected in options:
-        return
-    resolved = _resolve_col_name(options, default_name)
-    if resolved is None and EMPTY_COL_OPTION in options:
-        resolved = EMPTY_COL_OPTION
-    elif resolved is None and options:
-        resolved = options[_find_default_index(options, default_name)]
-    if resolved is not None:
-        st.session_state[state_key] = resolved
+    return EMPTY_COL_OPTION
 
 
 def _set_preferred_or_empty(options: list[str], state_key: str, preferred_names: list[str]):
@@ -283,8 +266,29 @@ def _set_preferred_or_empty(options: list[str], state_key: str, preferred_names:
         if resolved is not None:
             st.session_state[state_key] = resolved
             return
-    if EMPTY_COL_OPTION in options:
-        st.session_state[state_key] = EMPTY_COL_OPTION
+    st.session_state[state_key] = EMPTY_COL_OPTION
+
+
+def _clear_mapping_session_state():
+    # Column-mapping related UI keys. These must not leak across uploaded files.
+    mapping_prefixes = (
+        "cp_",
+        "adult_cp_",
+        "sf_",
+        "adult_sf_",
+        "m_",
+        "geo_",
+        "dis_",
+        "idp_",
+        "p1_",
+        "p2_",
+        "p3_",
+        "p4_",
+        "dq_",
+    )
+    for k in list(st.session_state.keys()):
+        if k.startswith(mapping_prefixes):
+            st.session_state.pop(k, None)
 
 
 def _get_selected_text(state_key: str, default_value: str) -> str:
@@ -328,6 +332,7 @@ def main():
         file_changed = st.session_state.get("__active_file_signature") != file_signature
         if file_changed:
             st.session_state["__active_file_signature"] = file_signature
+            _clear_mapping_session_state()
         sheet_names = get_sheet_names(file_bytes)
     except Exception as e:
         st.error(f"Cannot read Excel file: {e}")
@@ -363,10 +368,6 @@ def main():
     df.columns = make_unique_columns(df.columns)
     adult_df.columns = adult_df.columns.astype(str).str.strip()
     adult_df.columns = make_unique_columns(adult_df.columns)
-    if EMPTY_COL_OPTION not in df.columns:
-        df[EMPTY_COL_OPTION] = ""
-    if EMPTY_COL_OPTION not in adult_df.columns:
-        adult_df[EMPTY_COL_OPTION] = ""
     adult_cols = adult_df.columns.tolist()
 
     # On file switch, force re-mapping of key CP fields so stale values from
@@ -413,6 +414,256 @@ def main():
         use_adult_id = adult_id_col != "(none)"
         if use_adult_id and adult_df[adult_id_col].isna().any():
             st.warning("Some rows have missing Adult ID. Those rows are excluded from ID-based groupings.")
+
+    # Per-rerun memoization for heavy aggregations reused across tabs.
+    _calc_cache: dict[tuple, object] = {}
+
+    def _cache_get(key: tuple, compute):
+        if key not in _calc_cache:
+            _calc_cache[key] = compute()
+        return _calc_cache[key]
+
+    def _cp_core_cached(
+        use_id_v: bool,
+        id_col_v: str,
+        team_col: str,
+        heart_col: str,
+        cyr_col: str,
+        ismf_col: str,
+        sf_col: str,
+        rec_col: str,
+        infedu_col: str,
+        sel_col: str,
+        socr_col: str,
+        eore_col: str,
+        gbv_col: str,
+        la_col: str,
+    ):
+        key = (
+            "cp_core",
+            use_id_v,
+            id_col_v,
+            team_col,
+            heart_col,
+            cyr_col,
+            ismf_col,
+            sf_col,
+            rec_col,
+            infedu_col,
+            sel_col,
+            socr_col,
+            eore_col,
+            gbv_col,
+            la_col,
+        )
+        return _cache_get(
+            key,
+            lambda: cp_services_indicator_core(
+                df,
+                use_id_v,
+                id_col_v,
+                team_col,
+                heart_col,
+                cyr_col,
+                ismf_col,
+                sf_col,
+                rec_col,
+                infedu_col,
+                sel_col,
+                socr_col,
+                eore_col,
+                gbv_col,
+                la_col,
+            ),
+        )
+
+    def _cp_monthly_cached(
+        use_id_v: bool,
+        id_col_v: str,
+        team_col: str,
+        heart_col: str,
+        cyr_col: str,
+        ismf_col: str,
+        sf_col: str,
+        rec_col: str,
+        infedu_col: str,
+        sel_col: str,
+        socr_col: str,
+        eore_col: str,
+        gbv_col: str,
+        la_col: str,
+        date_col: str,
+        gender_col: str,
+    ):
+        key = (
+            "cp_monthly",
+            use_id_v,
+            id_col_v,
+            team_col,
+            heart_col,
+            cyr_col,
+            ismf_col,
+            sf_col,
+            rec_col,
+            infedu_col,
+            sel_col,
+            socr_col,
+            eore_col,
+            gbv_col,
+            la_col,
+            date_col,
+            gender_col,
+        )
+        return _cache_get(
+            key,
+            lambda: cp_services_indicator_monthly_core(
+                df,
+                use_id_v,
+                id_col_v,
+                team_col,
+                heart_col,
+                cyr_col,
+                ismf_col,
+                sf_col,
+                rec_col,
+                infedu_col,
+                sel_col,
+                socr_col,
+                eore_col,
+                gbv_col,
+                la_col,
+                date_col,
+                gender_col,
+            ),
+        )
+
+    def _adult_cp_core_cached(
+        use_id_v: bool,
+        id_col_v: str,
+        sf_col: str,
+        unstructured_col: str,
+        youth_col: str,
+    ):
+        key = ("adult_cp_core", use_id_v, id_col_v, sf_col, unstructured_col, youth_col)
+        return _cache_get(
+            key,
+            lambda: cp_services_indicator_adult_core(
+                adult_df,
+                use_id_v,
+                id_col_v,
+                sf_col,
+                unstructured_col,
+                youth_col,
+            ),
+        )
+
+    def _adult_cp_monthly_cached(
+        use_id_v: bool,
+        id_col_v: str,
+        sf_col: str,
+        unstructured_col: str,
+        youth_col: str,
+        date_col: str,
+        gender_col: str,
+    ):
+        key = (
+            "adult_cp_monthly",
+            use_id_v,
+            id_col_v,
+            sf_col,
+            unstructured_col,
+            youth_col,
+            date_col,
+            gender_col,
+        )
+        return _cache_get(
+            key,
+            lambda: cp_services_indicator_adult_monthly_core(
+                adult_df,
+                use_id_v,
+                id_col_v,
+                sf_col,
+                unstructured_col,
+                youth_col,
+                date_col,
+                gender_col,
+            ),
+        )
+
+    def _structured_monthly_cached(
+        use_id_v: bool,
+        id_col_v: str,
+        team_completed_col: str,
+        team_date_col: str,
+        heart_completed_col: str,
+        heart_date_col: str,
+        cyr_completed_col: str,
+        cyr_date_col: str,
+        ismf_completed_col: str,
+        ismf_date_col: str,
+        gender_col: str,
+    ):
+        key = (
+            "structured_monthly",
+            use_id_v,
+            id_col_v,
+            team_completed_col,
+            team_date_col,
+            heart_completed_col,
+            heart_date_col,
+            cyr_completed_col,
+            cyr_date_col,
+            ismf_completed_col,
+            ismf_date_col,
+            gender_col,
+        )
+        return _cache_get(
+            key,
+            lambda: structured_monthly_first_time_core(
+                df,
+                use_id_v,
+                id_col_v,
+                team_completed_col,
+                team_date_col,
+                heart_completed_col,
+                heart_date_col,
+                cyr_completed_col,
+                cyr_date_col,
+                ismf_completed_col,
+                ismf_date_col,
+                gender_col,
+            ),
+        )
+
+    def _sf_monthly_child_cached(
+        use_id_v: bool,
+        id_col_v: str,
+        completed_col: str,
+        date_col: str,
+        gender_col: str,
+    ):
+        key = ("sf_monthly_child", use_id_v, id_col_v, completed_col, date_col, gender_col)
+        return _cache_get(
+            key,
+            lambda: safe_families_monthly_gender_core(
+                df, use_id_v, id_col_v, completed_col, date_col, gender_col
+            ),
+        )
+
+    def _sf_monthly_adult_cached(
+        use_id_v: bool,
+        id_col_v: str,
+        completed_col: str,
+        date_col: str,
+        gender_col: str,
+    ):
+        key = ("sf_monthly_adult", use_id_v, id_col_v, completed_col, date_col, gender_col)
+        return _cache_get(
+            key,
+            lambda: safe_families_monthly_gender_adult_core(
+                adult_df, use_id_v, id_col_v, completed_col, date_col, gender_col
+            ),
+        )
     
     # =============================
     # Tabs
@@ -608,8 +859,7 @@ def main():
         cp_gbv_col = _get_selected_col(child_cols, f"cp_gbv__{sheet}", CP_SERVICE_DEFAULT_NAMES["GBV"])
         cp_la_col = _get_selected_col(child_cols, f"cp_la__{sheet}", CP_SERVICE_DEFAULT_NAMES["LA"])
 
-        child_cp_total_sessions, child_cp_mask = cp_services_indicator_core(
-            df,
+        child_cp_total_sessions, child_cp_mask = _cp_core_cached(
             use_id,
             id_col,
             cp_team_col,
@@ -634,8 +884,7 @@ def main():
         adult_cp_youth_resilience_col = _get_selected_col(
             adult_cols, f"adult_cp_youth_resilience__{adult_sheet}", "Unstructured MHPSS Activities Youth Resilience"
         )
-        adult_cp_total_sessions, adult_cp_mask = cp_services_indicator_adult_core(
-            adult_df,
+        adult_cp_total_sessions, adult_cp_mask = _adult_cp_core_cached(
             use_adult_id,
             adult_id_col,
             adult_cp_sf_col,
@@ -653,8 +902,8 @@ def main():
         sf_gender_col = _get_selected_col(
             child_cols, f"sf_gender__{sheet}", SAFE_FAMILIES_DEFAULT_NAMES["gender"]
         )
-        _, _, child_sf_completed_total, _ = safe_families_monthly_gender_core(
-            df, use_id, id_col, sf_completed_col, sf_date_col, sf_gender_col
+        _, _, child_sf_completed_total, _ = _sf_monthly_child_cached(
+            use_id, id_col, sf_completed_col, sf_date_col, sf_gender_col
         )
 
         adult_sf_completed_col = _get_selected_col(
@@ -666,8 +915,7 @@ def main():
         adult_sf_gender_col = _get_selected_col(
             adult_cols, f"adult_sf_gender__{adult_sheet}", "Gender"
         )
-        _, _, adult_sf_completed_total, _ = safe_families_monthly_gender_adult_core(
-            adult_df,
+        _, _, adult_sf_completed_total, _ = _sf_monthly_adult_cached(
             use_adult_id,
             adult_id_col,
             adult_sf_completed_col,
@@ -681,7 +929,7 @@ def main():
             theme_mode,
         )
         render_indicator_banner(
-            "# of children and adults who received mental health and/or psycosocial support (structured MHPSS programs)",
+            "# of children who received mental health and/or psychosocial support (structured MHPSS programs)",
             int(structured_indicator["n_any"]),
             theme_mode,
         )
@@ -786,8 +1034,7 @@ def main():
         cp_date_col = _get_selected_col(child_cols, f"cp_month_date__{sheet}", "Attendance 2nd Date")
         cp_gender_col = _get_selected_col(child_cols, f"cp_month_gender__{sheet}", "Gender")
 
-        cp_monthly = cp_services_indicator_monthly_core(
-            df,
+        cp_monthly = _cp_monthly_cached(
             use_id,
             id_col,
             cp_team_col,
@@ -816,8 +1063,7 @@ def main():
         adult_cp_date_col = _get_selected_col(adult_cols, f"adult_cp_date__{adult_sheet}", "Attendance 2nd Date")
         adult_cp_gender_col = _get_selected_col(adult_cols, f"adult_cp_gender__{adult_sheet}", "Gender")
 
-        adult_cp_monthly = cp_services_indicator_adult_monthly_core(
-            adult_df,
+        adult_cp_monthly = _adult_cp_monthly_cached(
             use_adult_id,
             adult_id_col,
             adult_cp_sf_col,
@@ -846,8 +1092,7 @@ def main():
         ismf_date_col = _get_selected_col(child_cols, f"m_ismf_date__{sheet}", STRUCTURED_DEFAULTS["dates"]["ISMF"])
         struct_gender_col = _get_selected_col(child_cols, f"m_gender__{sheet}", STRUCTURED_DEFAULTS["gender"])
 
-        monthly_struct = structured_monthly_first_time_core(
-            df,
+        monthly_struct = _structured_monthly_cached(
             use_id,
             id_col,
             team_completed_col,
@@ -866,22 +1111,21 @@ def main():
             None,
         )
 
-        st.markdown("**2) # of children and adults who received mental health and/or psycosocial support (structured MHPSS programs)**")
+        st.markdown("**2) # of children who received mental health and/or psychosocial support (structured MHPSS programs)**")
         st.dataframe(structured_indicator_monthly_table, use_container_width=True)
 
         # 3) Safe Families monthly (children + adults).
         sf_completed_col = _get_selected_col(child_cols, f"sf_comp__{sheet}", SAFE_FAMILIES_DEFAULT_NAMES["completed"])
         sf_date_col = _get_selected_col(child_cols, f"sf_date__{sheet}", SAFE_FAMILIES_DEFAULT_NAMES["date"])
         sf_gender_col = _get_selected_col(child_cols, f"sf_gender__{sheet}", SAFE_FAMILIES_DEFAULT_NAMES["gender"])
-        sf_monthly_pivot, _, _, _ = safe_families_monthly_gender_core(
-            df, use_id, id_col, sf_completed_col, sf_date_col, sf_gender_col
+        sf_monthly_pivot, _, _, _ = _sf_monthly_child_cached(
+            use_id, id_col, sf_completed_col, sf_date_col, sf_gender_col
         )
 
         adult_sf_completed_col = _get_selected_col(adult_cols, f"adult_sf_comp__{adult_sheet}", "SF Completed (5)")
         adult_sf_date_col = _get_selected_col(adult_cols, f"adult_sf_date__{adult_sheet}", "SF Completed (5) Date")
         adult_sf_gender_col = _get_selected_col(adult_cols, f"adult_sf_gender__{adult_sheet}", "Gender")
-        adult_sf_monthly_pivot, _, _, _ = safe_families_monthly_gender_adult_core(
-            adult_df,
+        adult_sf_monthly_pivot, _, _, _ = _sf_monthly_adult_cached(
             use_adult_id,
             adult_id_col,
             adult_sf_completed_col,
@@ -981,7 +1225,7 @@ def main():
         st.session_state["structured_cached"] = structured
 
         render_indicator_banner(
-            "# of children and adults who received mental health and/or psycosocial support (structured MHPSS programs)",
+            "# of children who received mental health and/or psychosocial support (structured MHPSS programs)",
             int(structured["n_any"]),
             theme_mode,
         )
@@ -1083,13 +1327,18 @@ def main():
             key=f"m_gender__{sheet}",
         )
     
-        monthly_struct = structured_monthly_first_time_core(
-            df, use_id, id_col,
-            team_completed_col, team_date_col,
-            heart_completed_col, heart_date_col,
-            cyr_completed_col, cyr_date_col,
-            ismf_completed_col, ismf_date_col,
-            gender_col
+        monthly_struct = _structured_monthly_cached(
+            use_id,
+            id_col,
+            team_completed_col,
+            team_date_col,
+            heart_completed_col,
+            heart_date_col,
+            cyr_completed_col,
+            cyr_date_col,
+            ismf_completed_col,
+            ismf_date_col,
+            gender_col,
         )
     
         available_months = (
@@ -1252,83 +1501,94 @@ def main():
         st.subheader("Indicator: # of individuals participating in child protection services (>=2 total sessions)")
         st.caption("Logic: total sessions across ALL activities >= 2. Columns by Excel letters: AL, AO, AR, AU, AZ, BC, BD, BE, BF, BG, BH, BI")
     
-        team_s_col = st.selectbox(
+        team_s_col = pick_col_with_default(
+            df,
             f"TEAM_UP sessions ({CP_SERVICE_DEFAULT_LETTERS['TEAM_UP']})",
-            df.columns.tolist(),
-            index=_find_default_index(df.columns.tolist(), CP_SERVICE_DEFAULT_NAMES["TEAM_UP"]),
+            CP_SERVICE_DEFAULT_NAMES["TEAM_UP"],
             key=f"cp_team__{sheet}",
         )
-        heart_s_col = st.selectbox(
+        heart_s_col = pick_col_with_default(
+            df,
             f"HEART sessions ({CP_SERVICE_DEFAULT_LETTERS['HEART']})",
-            df.columns.tolist(),
-            index=_find_default_index(df.columns.tolist(), CP_SERVICE_DEFAULT_NAMES["HEART"]),
+            CP_SERVICE_DEFAULT_NAMES["HEART"],
             key=f"cp_heart__{sheet}",
         )
-        cyr_s_col = st.selectbox(
+        cyr_s_col = pick_col_with_default(
+            df,
             f"CYR sessions ({CP_SERVICE_DEFAULT_LETTERS['CYR']})",
-            df.columns.tolist(),
-            index=_find_default_index(df.columns.tolist(), CP_SERVICE_DEFAULT_NAMES["CYR"]),
+            CP_SERVICE_DEFAULT_NAMES["CYR"],
             key=f"cp_cyr__{sheet}",
         )
-        ismf_s_col = st.selectbox(
+        ismf_s_col = pick_col_with_default(
+            df,
             f"ISMF sessions ({CP_SERVICE_DEFAULT_LETTERS['ISMF']})",
-            df.columns.tolist(),
-            index=_find_default_index(df.columns.tolist(), CP_SERVICE_DEFAULT_NAMES["ISMF"]),
+            CP_SERVICE_DEFAULT_NAMES["ISMF"],
             key=f"cp_ismf__{sheet}",
         )
-        sf_s_col = st.selectbox(
+        sf_s_col = pick_col_with_default(
+            df,
             f"Safe Families sessions ({CP_SERVICE_DEFAULT_LETTERS['SAFE_FAMILIES']})",
-            df.columns.tolist(),
-            index=_find_default_index(df.columns.tolist(), CP_SERVICE_DEFAULT_NAMES["SAFE_FAMILIES"]),
+            CP_SERVICE_DEFAULT_NAMES["SAFE_FAMILIES"],
             key=f"cp_sf__{sheet}",
         )
-        rec_s_col = st.selectbox(
+        rec_s_col = pick_col_with_default(
+            df,
             f"Recreational sessions ({CP_SERVICE_DEFAULT_LETTERS['RECREATIONAL']})",
-            df.columns.tolist(),
-            index=_find_default_index(df.columns.tolist(), CP_SERVICE_DEFAULT_NAMES["RECREATIONAL"]),
+            CP_SERVICE_DEFAULT_NAMES["RECREATIONAL"],
             key=f"cp_rec__{sheet}",
         )
-        infedu_s_col = st.selectbox(
+        infedu_s_col = pick_col_with_default(
+            df,
             f"Informal Education sessions ({CP_SERVICE_DEFAULT_LETTERS['INFORMAL_EDU']})",
-            df.columns.tolist(),
-            index=_find_default_index(df.columns.tolist(), CP_SERVICE_DEFAULT_NAMES["INFORMAL_EDU"]),
+            CP_SERVICE_DEFAULT_NAMES["INFORMAL_EDU"],
             key=f"cp_infedu__{sheet}",
         )
-        sel_s_col = st.selectbox(
+        sel_s_col = pick_col_with_default(
+            df,
             f"SEL sessions ({CP_SERVICE_DEFAULT_LETTERS['SEL']})",
-            df.columns.tolist(),
-            index=_find_default_index(df.columns.tolist(), CP_SERVICE_DEFAULT_NAMES["SEL"]),
+            CP_SERVICE_DEFAULT_NAMES["SEL"],
             key=f"cp_sel__{sheet}",
         )
-        socr_s_col = st.selectbox(
+        socr_s_col = pick_col_with_default(
+            df,
             f"SOCR sessions ({CP_SERVICE_DEFAULT_LETTERS['SOCR']})",
-            df.columns.tolist(),
-            index=_find_default_index(df.columns.tolist(), CP_SERVICE_DEFAULT_NAMES["SOCR"]),
+            CP_SERVICE_DEFAULT_NAMES["SOCR"],
             key=f"cp_socr__{sheet}",
         )
-        eore_s_col = st.selectbox(
+        eore_s_col = pick_col_with_default(
+            df,
             f"EORE sessions ({CP_SERVICE_DEFAULT_LETTERS['EORE']})",
-            df.columns.tolist(),
-            index=_find_default_index(df.columns.tolist(), CP_SERVICE_DEFAULT_NAMES["EORE"]),
+            CP_SERVICE_DEFAULT_NAMES["EORE"],
             key=f"cp_eore__{sheet}",
         )
-        gbv_s_col = st.selectbox(
+        gbv_s_col = pick_col_with_default(
+            df,
             f"GBV sessions ({CP_SERVICE_DEFAULT_LETTERS['GBV']})",
-            df.columns.tolist(),
-            index=_find_default_index(df.columns.tolist(), CP_SERVICE_DEFAULT_NAMES["GBV"]),
+            CP_SERVICE_DEFAULT_NAMES["GBV"],
             key=f"cp_gbv__{sheet}",
         )
-        la_s_col = st.selectbox(
+        la_s_col = pick_col_with_default(
+            df,
             f"LA sessions ({CP_SERVICE_DEFAULT_LETTERS['LA']})",
-            df.columns.tolist(),
-            index=_find_default_index(df.columns.tolist(), CP_SERVICE_DEFAULT_NAMES["LA"]),
+            CP_SERVICE_DEFAULT_NAMES["LA"],
             key=f"cp_la__{sheet}",
         )
     
-        total_sessions, indicator_mask = cp_services_indicator_core(
-            df, use_id, id_col,
-            team_s_col, heart_s_col, cyr_s_col, ismf_s_col,
-            sf_s_col, rec_s_col, infedu_s_col, sel_s_col, socr_s_col, eore_s_col, gbv_s_col, la_s_col
+        total_sessions, indicator_mask = _cp_core_cached(
+            use_id,
+            id_col,
+            team_s_col,
+            heart_s_col,
+            cyr_s_col,
+            ismf_s_col,
+            sf_s_col,
+            rec_s_col,
+            infedu_s_col,
+            sel_s_col,
+            socr_s_col,
+            eore_s_col,
+            gbv_s_col,
+            la_s_col,
         )
     
         indicator_total = int(indicator_mask.sum())
@@ -1366,8 +1626,7 @@ def main():
             key=f"cp_month_gender__{sheet}",
         )
 
-        cp_monthly = cp_services_indicator_monthly_core(
-            df,
+        cp_monthly = _cp_monthly_cached(
             use_id,
             id_col,
             team_s_col,
@@ -1533,8 +1792,7 @@ def main():
             key=f"adult_cp_youth_resilience__{adult_sheet}",
         )
 
-        adult_total_sessions, adult_indicator_mask = cp_services_indicator_adult_core(
-            adult_df,
+        adult_total_sessions, adult_indicator_mask = _adult_cp_core_cached(
             use_adult_id,
             adult_id_col,
             adult_cp_sf_col,
@@ -1574,8 +1832,7 @@ def main():
             key=f"adult_cp_gender__{adult_sheet}",
         )
 
-        adult_cp_monthly = cp_services_indicator_adult_monthly_core(
-            adult_df,
+        adult_cp_monthly = _adult_cp_monthly_cached(
             use_adult_id,
             adult_id_col,
             adult_cp_sf_col,
@@ -1724,27 +1981,27 @@ def main():
         st.subheader("Safe Families: monthly achievements by gender")
         st.caption("BA = Completed (Yes/No), BB = Completion Date (MMDDYYYY), U = gender (boy/girl)")
     
-        sf_completed_col = st.selectbox(
+        sf_completed_col = pick_col_with_default(
+            df,
             f"Safe Families Completed ({SAFE_FAMILIES_DEFAULT_LETTERS['completed']})",
-            df.columns.tolist(),
-            index=_find_default_index(df.columns.tolist(), SAFE_FAMILIES_DEFAULT_NAMES["completed"]),
+            SAFE_FAMILIES_DEFAULT_NAMES["completed"],
             key=f"sf_comp__{sheet}",
         )
-        sf_date_col = st.selectbox(
+        sf_date_col = pick_col_with_default(
+            df,
             f"Safe Families completion date ({SAFE_FAMILIES_DEFAULT_LETTERS['date']})",
-            df.columns.tolist(),
-            index=_find_default_index(df.columns.tolist(), SAFE_FAMILIES_DEFAULT_NAMES["date"]),
+            SAFE_FAMILIES_DEFAULT_NAMES["date"],
             key=f"sf_date__{sheet}",
         )
-        gender_col = st.selectbox(
+        gender_col = pick_col_with_default(
+            df,
             f"Gender column ({SAFE_FAMILIES_DEFAULT_LETTERS['gender']})",
-            df.columns.tolist(),
-            index=_find_default_index(df.columns.tolist(), SAFE_FAMILIES_DEFAULT_NAMES["gender"]),
+            SAFE_FAMILIES_DEFAULT_NAMES["gender"],
             key=f"sf_gender__{sheet}",
         )
     
-        sf_monthly_pivot, sf_summary_df, sf_completed_total, sf_missing_dates = safe_families_monthly_gender_core(
-            df, use_id, id_col, sf_completed_col, sf_date_col, gender_col
+        sf_monthly_pivot, sf_summary_df, sf_completed_total, sf_missing_dates = _sf_monthly_child_cached(
+            use_id, id_col, sf_completed_col, sf_date_col, gender_col
         )
     
         c1, c2 = st.columns(2)
@@ -1790,8 +2047,7 @@ def main():
         )
 
         adult_sf_monthly_pivot, adult_sf_summary_df, adult_sf_completed_total, adult_sf_missing_dates = (
-            safe_families_monthly_gender_adult_core(
-                adult_df,
+            _sf_monthly_adult_cached(
                 use_adult_id,
                 adult_id_col,
                 adult_sf_completed_col,
@@ -1863,91 +2119,83 @@ def main():
         st.caption("Filter rule: only children meeting CP indicator (>=2 total sessions).")
 
         cp_col_left, cp_col_right = st.columns(2)
-        cp_opts = df.columns.tolist()
-
-        def _geo_cp_default_index(state_key: str, default_name: str) -> int:
-            selected = st.session_state.get(state_key)
-            if isinstance(selected, str) and selected in cp_opts:
-                return cp_opts.index(selected)
-            return _find_default_index(cp_opts, default_name)
 
         with cp_col_left:
-            geo_team_s_col = st.selectbox(
+            geo_team_s_col = pick_col_with_default(
+                df,
                 "TEAM_UP sessions column",
-                cp_opts,
-                index=_geo_cp_default_index(f"cp_team__{sheet}", CP_SERVICE_DEFAULT_NAMES["TEAM_UP"]),
+                CP_SERVICE_DEFAULT_NAMES["TEAM_UP"],
                 key=f"geo_cp_team__{sheet}",
             )
-            geo_cyr_s_col = st.selectbox(
+            geo_cyr_s_col = pick_col_with_default(
+                df,
                 "CYR sessions column",
-                cp_opts,
-                index=_geo_cp_default_index(f"cp_cyr__{sheet}", CP_SERVICE_DEFAULT_NAMES["CYR"]),
+                CP_SERVICE_DEFAULT_NAMES["CYR"],
                 key=f"geo_cp_cyr__{sheet}",
             )
-            geo_sf_s_col = st.selectbox(
+            geo_sf_s_col = pick_col_with_default(
+                df,
                 "Safe Families sessions column",
-                cp_opts,
-                index=_geo_cp_default_index(f"cp_sf__{sheet}", CP_SERVICE_DEFAULT_NAMES["SAFE_FAMILIES"]),
+                CP_SERVICE_DEFAULT_NAMES["SAFE_FAMILIES"],
                 key=f"geo_cp_sf__{sheet}",
             )
-            geo_infedu_s_col = st.selectbox(
+            geo_infedu_s_col = pick_col_with_default(
+                df,
                 "Informal Education sessions column",
-                cp_opts,
-                index=_geo_cp_default_index(f"cp_infedu__{sheet}", CP_SERVICE_DEFAULT_NAMES["INFORMAL_EDU"]),
+                CP_SERVICE_DEFAULT_NAMES["INFORMAL_EDU"],
                 key=f"geo_cp_infedu__{sheet}",
             )
-            geo_sel_s_col = st.selectbox(
+            geo_sel_s_col = pick_col_with_default(
+                df,
                 "SEL sessions column",
-                cp_opts,
-                index=_geo_cp_default_index(f"cp_sel__{sheet}", CP_SERVICE_DEFAULT_NAMES["SEL"]),
+                CP_SERVICE_DEFAULT_NAMES["SEL"],
                 key=f"geo_cp_sel__{sheet}",
             )
-            geo_socr_s_col = st.selectbox(
+            geo_socr_s_col = pick_col_with_default(
+                df,
                 "SOCR sessions column",
-                cp_opts,
-                index=_geo_cp_default_index(f"cp_socr__{sheet}", CP_SERVICE_DEFAULT_NAMES["SOCR"]),
+                CP_SERVICE_DEFAULT_NAMES["SOCR"],
                 key=f"geo_cp_socr__{sheet}",
             )
         with cp_col_right:
-            geo_heart_s_col = st.selectbox(
+            geo_heart_s_col = pick_col_with_default(
+                df,
                 "HEART sessions column",
-                cp_opts,
-                index=_geo_cp_default_index(f"cp_heart__{sheet}", CP_SERVICE_DEFAULT_NAMES["HEART"]),
+                CP_SERVICE_DEFAULT_NAMES["HEART"],
                 key=f"geo_cp_heart__{sheet}",
             )
-            geo_ismf_s_col = st.selectbox(
+            geo_ismf_s_col = pick_col_with_default(
+                df,
                 "ISMF sessions column",
-                cp_opts,
-                index=_geo_cp_default_index(f"cp_ismf__{sheet}", CP_SERVICE_DEFAULT_NAMES["ISMF"]),
+                CP_SERVICE_DEFAULT_NAMES["ISMF"],
                 key=f"geo_cp_ismf__{sheet}",
             )
-            geo_rec_s_col = st.selectbox(
+            geo_rec_s_col = pick_col_with_default(
+                df,
                 "Recreational sessions column",
-                cp_opts,
-                index=_geo_cp_default_index(f"cp_rec__{sheet}", CP_SERVICE_DEFAULT_NAMES["RECREATIONAL"]),
+                CP_SERVICE_DEFAULT_NAMES["RECREATIONAL"],
                 key=f"geo_cp_rec__{sheet}",
             )
-            geo_eore_s_col = st.selectbox(
+            geo_eore_s_col = pick_col_with_default(
+                df,
                 "EORE sessions column",
-                cp_opts,
-                index=_geo_cp_default_index(f"cp_eore__{sheet}", CP_SERVICE_DEFAULT_NAMES["EORE"]),
+                CP_SERVICE_DEFAULT_NAMES["EORE"],
                 key=f"geo_cp_eore__{sheet}",
             )
-            geo_gbv_s_col = st.selectbox(
+            geo_gbv_s_col = pick_col_with_default(
+                df,
                 "GBV sessions column",
-                cp_opts,
-                index=_geo_cp_default_index(f"cp_gbv__{sheet}", CP_SERVICE_DEFAULT_NAMES["GBV"]),
+                CP_SERVICE_DEFAULT_NAMES["GBV"],
                 key=f"geo_cp_gbv__{sheet}",
             )
-            geo_la_s_col = st.selectbox(
+            geo_la_s_col = pick_col_with_default(
+                df,
                 "LA sessions column",
-                cp_opts,
-                index=_geo_cp_default_index(f"cp_la__{sheet}", CP_SERVICE_DEFAULT_NAMES["LA"]),
+                CP_SERVICE_DEFAULT_NAMES["LA"],
                 key=f"geo_cp_la__{sheet}",
             )
 
-        geo_total_sessions, geo_indicator_mask = cp_services_indicator_core(
-            df,
+        geo_total_sessions, geo_indicator_mask = _cp_core_cached(
             use_id,
             id_col,
             geo_team_s_col,
@@ -2107,8 +2355,7 @@ def main():
         dis_gbv_col = _get_selected_col(df.columns.tolist(), f"cp_gbv__{sheet}", CP_SERVICE_DEFAULT_NAMES["GBV"])
         dis_la_col = _get_selected_col(df.columns.tolist(), f"cp_la__{sheet}", CP_SERVICE_DEFAULT_NAMES["LA"])
 
-        dis_total_sessions, dis_indicator_mask = cp_services_indicator_core(
-            df,
+        dis_total_sessions, dis_indicator_mask = _cp_core_cached(
             use_id,
             id_col,
             dis_team_col,
@@ -2223,8 +2470,7 @@ def main():
         idp_gbv_col = _get_selected_col(df.columns.tolist(), f"cp_gbv__{sheet}", CP_SERVICE_DEFAULT_NAMES["GBV"])
         idp_la_col = _get_selected_col(df.columns.tolist(), f"cp_la__{sheet}", CP_SERVICE_DEFAULT_NAMES["LA"])
 
-        idp_total_sessions, idp_indicator_mask = cp_services_indicator_core(
-            df,
+        idp_total_sessions, idp_indicator_mask = _cp_core_cached(
             use_id,
             id_col,
             idp_team_col,

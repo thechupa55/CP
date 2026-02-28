@@ -8,6 +8,30 @@ from utils import (
 )
 
 
+def _num_col(df: pd.DataFrame, col: str | None) -> pd.Series:
+    if col and col in df.columns:
+        return to_num(df[col])
+    return pd.Series(0, index=df.index, dtype="float64")
+
+
+def _bool_col(df: pd.DataFrame, col: str | None) -> pd.Series:
+    if col and col in df.columns:
+        return to_bool_series(df[col])
+    return pd.Series(False, index=df.index)
+
+
+def _date_col(df: pd.DataFrame, col: str | None) -> pd.Series:
+    if col and col in df.columns:
+        return parse_mixed_date(df[col])
+    return pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+
+
+def _text_col(df: pd.DataFrame, col: str | None) -> pd.Series:
+    if col and col in df.columns:
+        return df[col].astype("string")
+    return pd.Series(pd.NA, index=df.index, dtype="string")
+
+
 def data_quality_dashboard_core(
     df: pd.DataFrame,
     id_col: str | None,
@@ -241,7 +265,7 @@ def structured_core(
     programs: list[tuple[str, str]],
     export_filter: str,
 ):
-    prog = pd.DataFrame({name: to_bool_series(df[col]) for name, col in programs})
+    prog = pd.DataFrame({name: _bool_col(df, col) for name, col in programs})
 
     if use_id:
         prog_by = prog.groupby(df[id_col]).max()
@@ -340,15 +364,15 @@ def structured_monthly_first_time_core(
     ismf_date_col: str,
     gender_col: str,
 ):
-    team_done = to_bool_series(df[team_completed_col])
-    heart_done = to_bool_series(df[heart_completed_col])
-    cyr_done = to_bool_series(df[cyr_completed_col])
-    ismf_done = to_bool_series(df[ismf_completed_col])
+    team_done = _bool_col(df, team_completed_col)
+    heart_done = _bool_col(df, heart_completed_col)
+    cyr_done = _bool_col(df, cyr_completed_col)
+    ismf_done = _bool_col(df, ismf_completed_col)
 
-    team_dt = parse_mixed_date(df[team_date_col]).where(team_done)
-    heart_dt = parse_mixed_date(df[heart_date_col]).where(heart_done)
-    cyr_dt = parse_mixed_date(df[cyr_date_col]).where(cyr_done)
-    ismf_dt = parse_mixed_date(df[ismf_date_col]).where(ismf_done)
+    team_dt = _date_col(df, team_date_col).where(team_done)
+    heart_dt = _date_col(df, heart_date_col).where(heart_done)
+    cyr_dt = _date_col(df, cyr_date_col).where(cyr_done)
+    ismf_dt = _date_col(df, ismf_date_col).where(ismf_done)
 
     dates_df = pd.DataFrame({"TEAM_UP": team_dt, "HEART": heart_dt, "CYR": cyr_dt, "ISMF": ismf_dt})
     first_dt_row = dates_df.min(axis=1)
@@ -356,7 +380,7 @@ def structured_monthly_first_time_core(
     first_program_row = dates_df.eq(first_dt_row, axis=0).idxmax(axis=1)
     first_program_row = first_program_row.where(first_dt_row.notna())
 
-    gender_clean = df[gender_col].astype("string").str.strip().str.lower()
+    gender_clean = _text_col(df, gender_col).str.strip().str.lower()
     gender_clean = gender_clean.where(gender_clean.isin(["boy", "girl"]), "unknown")
 
     if use_id:
@@ -493,18 +517,18 @@ def cp_services_indicator_core(
     gbv_s_col: str,
     la_s_col: str,
 ):
-    team_n = to_num(df[team_s_col])
-    heart_n = to_num(df[heart_s_col])
-    cyr_n = to_num(df[cyr_s_col])
-    ismf_n = to_num(df[ismf_s_col])
-    sf_n = to_num(df[sf_s_col])
-    rec_n = to_num(df[rec_s_col])
-    infedu_n = to_num(df[infedu_s_col])
-    sel_n = to_num(df[sel_s_col])
-    socr_n = to_num(df[socr_s_col])
-    eore_n = to_num(df[eore_s_col])
-    gbv_n = to_num(df[gbv_s_col])
-    la_n = to_num(df[la_s_col])
+    team_n = _num_col(df, team_s_col)
+    heart_n = _num_col(df, heart_s_col)
+    cyr_n = _num_col(df, cyr_s_col)
+    ismf_n = _num_col(df, ismf_s_col)
+    sf_n = _num_col(df, sf_s_col)
+    rec_n = _num_col(df, rec_s_col)
+    infedu_n = _num_col(df, infedu_s_col)
+    sel_n = _num_col(df, sel_s_col)
+    socr_n = _num_col(df, socr_s_col)
+    eore_n = _num_col(df, eore_s_col)
+    gbv_n = _num_col(df, gbv_s_col)
+    la_n = _num_col(df, la_s_col)
 
     if use_id:
         team_n = team_n.groupby(df[id_col]).sum()
@@ -548,12 +572,12 @@ def cp_services_indicator_monthly_core(
     gender_col: str,
 ):
     row_total = (
-        to_num(df[team_s_col]) + to_num(df[heart_s_col]) + to_num(df[cyr_s_col]) + to_num(df[ismf_s_col]) +
-        to_num(df[sf_s_col]) + to_num(df[rec_s_col]) + to_num(df[infedu_s_col]) + to_num(df[sel_s_col]) +
-        to_num(df[socr_s_col]) + to_num(df[eore_s_col]) + to_num(df[gbv_s_col]) + to_num(df[la_s_col])
+        _num_col(df, team_s_col) + _num_col(df, heart_s_col) + _num_col(df, cyr_s_col) + _num_col(df, ismf_s_col) +
+        _num_col(df, sf_s_col) + _num_col(df, rec_s_col) + _num_col(df, infedu_s_col) + _num_col(df, sel_s_col) +
+        _num_col(df, socr_s_col) + _num_col(df, eore_s_col) + _num_col(df, gbv_s_col) + _num_col(df, la_s_col)
     )
-    row_dt = parse_mixed_date(df[date_col])
-    row_gender = df[gender_col].astype("string").str.strip().str.lower()
+    row_dt = _date_col(df, date_col)
+    row_gender = _text_col(df, gender_col).str.strip().str.lower()
     row_gender = row_gender.where(row_gender.isin(["boy", "girl"]), "unknown")
 
     if use_id:
@@ -667,9 +691,9 @@ def cp_services_indicator_adult_core(
     unstructured_s_col: str,
     youth_resilience_s_col: str,
 ):
-    sf_n = to_num(df[sf_s_col])
-    unstructured_n = to_num(df[unstructured_s_col])
-    youth_resilience_n = to_num(df[youth_resilience_s_col])
+    sf_n = _num_col(df, sf_s_col)
+    unstructured_n = _num_col(df, unstructured_s_col)
+    youth_resilience_n = _num_col(df, youth_resilience_s_col)
 
     if use_id:
         sf_n = sf_n.groupby(df[id_col]).sum()
@@ -691,9 +715,9 @@ def cp_services_indicator_adult_monthly_core(
     date_col: str,
     gender_col: str,
 ):
-    row_total = to_num(df[sf_s_col]) + to_num(df[unstructured_s_col]) + to_num(df[youth_resilience_s_col])
-    row_dt = parse_mixed_date(df[date_col])
-    row_gender = df[gender_col].astype("string").str.strip().str.lower()
+    row_total = _num_col(df, sf_s_col) + _num_col(df, unstructured_s_col) + _num_col(df, youth_resilience_s_col)
+    row_dt = _date_col(df, date_col)
+    row_gender = _text_col(df, gender_col).str.strip().str.lower()
     row_gender = row_gender.where(row_gender.isin(["male", "female"]), "unknown")
 
     if use_id:
@@ -1034,10 +1058,10 @@ def safe_families_monthly_gender_core(
     sf_date_col: str,
     gender_col: str,
 ):
-    sf_done = to_bool_series(df[sf_completed_col])
-    sf_dt = parse_mixed_date(df[sf_date_col]).where(sf_done)
+    sf_done = _bool_col(df, sf_completed_col)
+    sf_dt = _date_col(df, sf_date_col).where(sf_done)
 
-    g = df[gender_col].astype("string").str.strip().str.lower()
+    g = _text_col(df, gender_col).str.strip().str.lower()
     g = g.where(g.isin(["boy", "girl"]), "unknown")
 
     if use_id:
@@ -1098,10 +1122,10 @@ def safe_families_monthly_gender_adult_core(
     sf_date_col: str,
     gender_col: str,
 ):
-    sf_done = to_bool_series(df[sf_completed_col])
-    sf_dt = parse_mixed_date(df[sf_date_col]).where(sf_done)
+    sf_done = _bool_col(df, sf_completed_col)
+    sf_dt = _date_col(df, sf_date_col).where(sf_done)
 
-    g = df[gender_col].astype("string").str.strip().str.lower()
+    g = _text_col(df, gender_col).str.strip().str.lower()
     g = g.where(g.isin(["male", "female"]), "unknown")
 
     if use_id:
