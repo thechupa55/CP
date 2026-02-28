@@ -22,7 +22,11 @@ CP_SERVICE_DEFAULT_LETTERS = {
     "SAFE_FAMILIES": "AZ",
     "RECREATIONAL": "BC",
     "INFORMAL_EDU": "BD",
+    "SEL": "BE",
+    "SOCR": "BF",
     "EORE": "BG",
+    "GBV": "BH",
+    "LA": "BI",
 }
 
 CP_SERVICE_DEFAULT_NAMES = {
@@ -33,7 +37,11 @@ CP_SERVICE_DEFAULT_NAMES = {
     "SAFE_FAMILIES": "SF + JSWP",
     "RECREATIONAL": "Recreational Activity",
     "INFORMAL_EDU": "Informal Education Activity",
+    "SEL": "SEL",
+    "SOCR": "SOCR",
     "EORE": "EORE",
+    "GBV": "GBV",
+    "LA": "LA",
 }
 
 SAFE_FAMILIES_DEFAULT_LETTERS = {

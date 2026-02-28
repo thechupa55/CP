@@ -487,7 +487,11 @@ def cp_services_indicator_core(
     sf_s_col: str,
     rec_s_col: str,
     infedu_s_col: str,
+    sel_s_col: str,
+    socr_s_col: str,
     eore_s_col: str,
+    gbv_s_col: str,
+    la_s_col: str,
 ):
     team_n = to_num(df[team_s_col])
     heart_n = to_num(df[heart_s_col])
@@ -496,7 +500,11 @@ def cp_services_indicator_core(
     sf_n = to_num(df[sf_s_col])
     rec_n = to_num(df[rec_s_col])
     infedu_n = to_num(df[infedu_s_col])
+    sel_n = to_num(df[sel_s_col])
+    socr_n = to_num(df[socr_s_col])
     eore_n = to_num(df[eore_s_col])
+    gbv_n = to_num(df[gbv_s_col])
+    la_n = to_num(df[la_s_col])
 
     if use_id:
         team_n = team_n.groupby(df[id_col]).sum()
@@ -506,9 +514,16 @@ def cp_services_indicator_core(
         sf_n = sf_n.groupby(df[id_col]).sum()
         rec_n = rec_n.groupby(df[id_col]).sum()
         infedu_n = infedu_n.groupby(df[id_col]).sum()
+        sel_n = sel_n.groupby(df[id_col]).sum()
+        socr_n = socr_n.groupby(df[id_col]).sum()
         eore_n = eore_n.groupby(df[id_col]).sum()
+        gbv_n = gbv_n.groupby(df[id_col]).sum()
+        la_n = la_n.groupby(df[id_col]).sum()
 
-    total_sessions = team_n + heart_n + cyr_n + ismf_n + sf_n + rec_n + infedu_n + eore_n
+    total_sessions = (
+        team_n + heart_n + cyr_n + ismf_n + sf_n + rec_n + infedu_n
+        + sel_n + socr_n + eore_n + gbv_n + la_n
+    )
     indicator_mask = total_sessions >= 2
     return total_sessions, indicator_mask
 
@@ -524,13 +539,18 @@ def cp_services_indicator_monthly_core(
     sf_s_col: str,
     rec_s_col: str,
     infedu_s_col: str,
+    sel_s_col: str,
+    socr_s_col: str,
     eore_s_col: str,
+    gbv_s_col: str,
+    la_s_col: str,
     date_col: str,
     gender_col: str,
 ):
     row_total = (
         to_num(df[team_s_col]) + to_num(df[heart_s_col]) + to_num(df[cyr_s_col]) + to_num(df[ismf_s_col]) +
-        to_num(df[sf_s_col]) + to_num(df[rec_s_col]) + to_num(df[infedu_s_col]) + to_num(df[eore_s_col])
+        to_num(df[sf_s_col]) + to_num(df[rec_s_col]) + to_num(df[infedu_s_col]) + to_num(df[sel_s_col]) +
+        to_num(df[socr_s_col]) + to_num(df[eore_s_col]) + to_num(df[gbv_s_col]) + to_num(df[la_s_col])
     )
     row_dt = parse_mixed_date(df[date_col])
     row_gender = df[gender_col].astype("string").str.strip().str.lower()
@@ -548,7 +568,11 @@ def cp_services_indicator_monthly_core(
             sf_s_col,
             rec_s_col,
             infedu_s_col,
+            sel_s_col,
+            socr_s_col,
             eore_s_col,
+            gbv_s_col,
+            la_s_col,
         )
         indicator_ids = total_sessions[indicator_mask].index
 
@@ -641,15 +665,18 @@ def cp_services_indicator_adult_core(
     id_col: str,
     sf_s_col: str,
     unstructured_s_col: str,
+    youth_resilience_s_col: str,
 ):
     sf_n = to_num(df[sf_s_col])
     unstructured_n = to_num(df[unstructured_s_col])
+    youth_resilience_n = to_num(df[youth_resilience_s_col])
 
     if use_id:
         sf_n = sf_n.groupby(df[id_col]).sum()
         unstructured_n = unstructured_n.groupby(df[id_col]).sum()
+        youth_resilience_n = youth_resilience_n.groupby(df[id_col]).sum()
 
-    total_sessions = sf_n + unstructured_n
+    total_sessions = sf_n + unstructured_n + youth_resilience_n
     indicator_mask = total_sessions >= 2
     return total_sessions, indicator_mask
 
@@ -660,17 +687,18 @@ def cp_services_indicator_adult_monthly_core(
     id_col: str,
     sf_s_col: str,
     unstructured_s_col: str,
+    youth_resilience_s_col: str,
     date_col: str,
     gender_col: str,
 ):
-    row_total = to_num(df[sf_s_col]) + to_num(df[unstructured_s_col])
+    row_total = to_num(df[sf_s_col]) + to_num(df[unstructured_s_col]) + to_num(df[youth_resilience_s_col])
     row_dt = parse_mixed_date(df[date_col])
     row_gender = df[gender_col].astype("string").str.strip().str.lower()
     row_gender = row_gender.where(row_gender.isin(["male", "female"]), "unknown")
 
     if use_id:
         total_sessions, indicator_mask = cp_services_indicator_adult_core(
-            df, use_id, id_col, sf_s_col, unstructured_s_col
+            df, use_id, id_col, sf_s_col, unstructured_s_col, youth_resilience_s_col
         )
         indicator_ids = total_sessions[indicator_mask].index
 
