@@ -7,6 +7,19 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
+## Reproducible Setup (Lockfile)
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.lock
+```
+
+Update lockfile after dependency changes:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip freeze > requirements.lock
+```
+
 ## Run App
 
 ```powershell
@@ -17,6 +30,13 @@ python -m venv .venv
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
+```
+
+## Lint / Typecheck
+
+```powershell
+.\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m mypy app.py core.py utils.py config.py
 ```
 
 ## Notes

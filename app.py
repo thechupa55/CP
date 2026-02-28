@@ -35,6 +35,88 @@ SAVE_THE_CHILDREN_RED = "#DA291C"
 SAVE_THE_CHILDREN_BLACK = "#111111"
 EMPTY_COL_OPTION = "(empty - choose column)"
 
+# Explicit registry of UI keys used for column mappings and closely related
+# per-file selector state. Used to clear stale state when switching files.
+MAPPING_STATE_KEY_STEMS = (
+    "dq_parent_name__",
+    "dq_parent_phone__",
+    "dq_child_name__",
+    "dq_child_settlement__",
+    "dq_child_dob__",
+    "p1_name_ui__",
+    "p1_col_ui__",
+    "p2_name_ui__",
+    "p2_col_ui__",
+    "p3_name_ui__",
+    "p3_col_ui__",
+    "p4_name_ui__",
+    "p4_col_ui__",
+    "m_team_comp__",
+    "m_team_date__",
+    "m_heart_comp__",
+    "m_heart_date__",
+    "m_cyr_comp__",
+    "m_cyr_date__",
+    "m_ismf_comp__",
+    "m_ismf_date__",
+    "m_gender__",
+    "m_child_full_name__",
+    "m_full_parent_name__",
+    "m_parents_phone__",
+    "cp_team__",
+    "cp_heart__",
+    "cp_cyr__",
+    "cp_ismf__",
+    "cp_sf__",
+    "cp_rec__",
+    "cp_infedu__",
+    "cp_sel__",
+    "cp_socr__",
+    "cp_eore__",
+    "cp_gbv__",
+    "cp_la__",
+    "cp_month_date__",
+    "cp_month_gender__",
+    "cp_child_full_name__",
+    "cp_full_parent_name__",
+    "cp_parents_phone__",
+    "adult_cp_sf__",
+    "adult_cp_unstructured__",
+    "adult_cp_youth_resilience__",
+    "adult_cp_date__",
+    "adult_cp_gender__",
+    "adult_cp_full_name__",
+    "sf_comp__",
+    "sf_date__",
+    "sf_gender__",
+    "adult_sf_comp__",
+    "adult_sf_date__",
+    "adult_sf_gender__",
+    "geo_oblast__",
+    "geo_hromada__",
+    "geo_raion__",
+    "geo_settlement__",
+    "geo_cp_team__",
+    "geo_cp_cyr__",
+    "geo_cp_sf__",
+    "geo_cp_infedu__",
+    "geo_cp_sel__",
+    "geo_cp_socr__",
+    "geo_cp_heart__",
+    "geo_cp_ismf__",
+    "geo_cp_rec__",
+    "geo_cp_eore__",
+    "geo_cp_gbv__",
+    "geo_cp_la__",
+    "dis_status__",
+    "dis_gender__",
+    "idp_status__",
+    "idp_gender__",
+)
+MAPPING_STATE_EXACT_KEYS = (
+    "structured_export_mode_ui",
+)
+
 
 def _normalize_col(name: str) -> str:
     return str(name).strip().casefold()
@@ -218,7 +300,7 @@ def render_header(theme_mode: str):
             unsafe_allow_html=True,
         )
     else:
-        st.title("MEAL Counter Tool v1")
+        st.title("MEAL Counter Tool v2")
 
 
 def render_indicator_banner(label: str, value: int, theme_mode: str):
@@ -270,24 +352,9 @@ def _set_preferred_or_empty(options: list[str], state_key: str, preferred_names:
 
 
 def _clear_mapping_session_state():
-    # Column-mapping related UI keys. These must not leak across uploaded files.
-    mapping_prefixes = (
-        "cp_",
-        "adult_cp_",
-        "sf_",
-        "adult_sf_",
-        "m_",
-        "geo_",
-        "dis_",
-        "idp_",
-        "p1_",
-        "p2_",
-        "p3_",
-        "p4_",
-        "dq_",
-    )
+    # Clear stale mapping keys based on explicit registry.
     for k in list(st.session_state.keys()):
-        if k.startswith(mapping_prefixes):
+        if k in MAPPING_STATE_EXACT_KEYS or any(k.startswith(stem) for stem in MAPPING_STATE_KEY_STEMS):
             st.session_state.pop(k, None)
 
 
@@ -298,11 +365,15 @@ def _get_selected_text(state_key: str, default_value: str) -> str:
     return default_value
 
 
+def _is_unmapped(col_name: str | None) -> bool:
+    return (col_name is None) or (col_name == EMPTY_COL_OPTION) or (not str(col_name).strip())
+
+
 def main():
     # =============================
     # Page
     # =============================
-    st.set_page_config(page_title="MEAL Counter Tool v1", layout="wide")
+    st.set_page_config(page_title="MEAL Counter Tool v2", layout="wide")
     
     # =============================
     # Sidebar: load file / sheet / id
@@ -713,30 +784,32 @@ def main():
         )
 
         if dq_parent_col is None:
-            dq_parent_col = st.selectbox(
+            dq_parent_col = pick_col_with_default(
+                df,
                 "Full Parent Name column",
-                df.columns.tolist(),
-                index=_find_default_index(df.columns.tolist(), "Full Parent Name"),
+                "Full Parent Name",
                 key=f"dq_parent_name__{sheet}",
             )
         if dq_phone_col is None:
-            dq_phone_col = st.selectbox(
+            dq_phone_col = pick_col_with_default(
+                df,
                 "Parents phone column",
-                df.columns.tolist(),
-                index=_find_default_index(df.columns.tolist(), "Parents phone"),
+                "Parents phone",
                 key=f"dq_parent_phone__{sheet}",
             )
-
-        dq_parent_phone = parent_name_phone_conflicts_core(df, dq_parent_col, dq_phone_col)
-        st.dataframe(dq_parent_phone["summary_df"], use_container_width=True)
-        st.dataframe(dq_parent_phone["conflicts_df"], use_container_width=True)
-        st.download_button(
-            "Download parent-phone conflicts (CSV)",
-            data=dq_parent_phone["conflicts_df"].to_csv(index=False).encode("utf-8"),
-            file_name="data_quality_parent_phone_conflicts.csv",
-            mime="text/csv",
-            key="dl_dq_parent_phone_conflicts",
-        )
+        if _is_unmapped(dq_parent_col) or _is_unmapped(dq_phone_col):
+            st.warning("To run parent-phone conflict check, map both: Full Parent Name and Parents phone.")
+        else:
+            dq_parent_phone = parent_name_phone_conflicts_core(df, dq_parent_col, dq_phone_col)
+            st.dataframe(dq_parent_phone["summary_df"], use_container_width=True)
+            st.dataframe(dq_parent_phone["conflicts_df"], use_container_width=True)
+            st.download_button(
+                "Download parent-phone conflicts (CSV)",
+                data=dq_parent_phone["conflicts_df"].to_csv(index=False).encode("utf-8"),
+                file_name="data_quality_parent_phone_conflicts.csv",
+                mime="text/csv",
+                key="dl_dq_parent_phone_conflicts",
+            )
 
         st.divider()
         st.caption("Check: duplicate Child Full Name values with Settlement, Full Parent Name, Parents phone and Date of birth.")
@@ -759,64 +832,80 @@ def main():
         )
 
         if dq_child_name_col is None:
-            dq_child_name_col = st.selectbox(
+            dq_child_name_col = pick_col_with_default(
+                df,
                 "Child Full Name column",
-                df.columns.tolist(),
-                index=_find_default_index(df.columns.tolist(), "Child Full Name"),
+                "Child Full Name",
                 key=f"dq_child_name__{sheet}",
             )
         if dq_settlement_col is None:
-            dq_settlement_col = st.selectbox(
+            dq_settlement_col = pick_col_with_default(
+                df,
                 "Settlement column",
-                df.columns.tolist(),
-                index=_find_default_index(df.columns.tolist(), "Settlement"),
+                "Settlement",
                 key=f"dq_child_settlement__{sheet}",
             )
         if dq_dob_col is None:
-            dq_dob_col = st.selectbox(
+            dq_dob_col = pick_col_with_default(
+                df,
                 "Date of birth column",
-                df.columns.tolist(),
-                index=_find_default_index(df.columns.tolist(), "Date of birth"),
+                "Date of birth",
                 key=f"dq_child_dob__{sheet}",
             )
-
-        dq_child_dups = child_name_duplicates_core(
-            df,
-            dq_child_name_col,
-            dq_settlement_col,
-            dq_parent_name_for_child_col,
-            dq_parent_phone_for_child_col,
-            dq_dob_col,
-        )
-        st.dataframe(dq_child_dups["summary_df"], use_container_width=True)
-        dq_duplicates_view = dq_child_dups["duplicates_df"].copy()
-        if not dq_duplicates_view.empty:
-            st.dataframe(dq_duplicates_view, use_container_width=True)
-        else:
-            st.dataframe(
-                dq_duplicates_view,
-                use_container_width=True,
+        if any(
+            _is_unmapped(c)
+            for c in [
+                dq_child_name_col,
+                dq_settlement_col,
+                dq_parent_name_for_child_col,
+                dq_parent_phone_for_child_col,
+                dq_dob_col,
+            ]
+        ):
+            st.warning(
+                "To run child duplicate check, map: Child Full Name, Settlement, Full Parent Name, Parents phone, Date of birth."
             )
-        st.download_button(
-            "Download child name duplicates (CSV)",
-            data=dq_child_dups["duplicates_df"].to_csv(index=False).encode("utf-8"),
-            file_name="data_quality_child_name_duplicates.csv",
-            mime="text/csv",
-            key="dl_dq_child_name_duplicates",
-        )
+        else:
+            dq_child_dups = child_name_duplicates_core(
+                df,
+                dq_child_name_col,
+                dq_settlement_col,
+                dq_parent_name_for_child_col,
+                dq_parent_phone_for_child_col,
+                dq_dob_col,
+            )
+            st.dataframe(dq_child_dups["summary_df"], use_container_width=True)
+            dq_duplicates_view = dq_child_dups["duplicates_df"].copy()
+            if not dq_duplicates_view.empty:
+                st.dataframe(dq_duplicates_view, use_container_width=True)
+            else:
+                st.dataframe(
+                    dq_duplicates_view,
+                    use_container_width=True,
+                )
+            st.download_button(
+                "Download child name duplicates (CSV)",
+                data=dq_child_dups["duplicates_df"].to_csv(index=False).encode("utf-8"),
+                file_name="data_quality_child_name_duplicates.csv",
+                mime="text/csv",
+                key="dl_dq_child_name_duplicates",
+            )
 
         st.divider()
         st.caption("Check: one Parents phone linked to different Full Parent Name values.")
-        dq_phone_name = parent_phone_name_conflicts_core(df, dq_parent_col, dq_phone_col)
-        st.dataframe(dq_phone_name["summary_df"], use_container_width=True)
-        st.dataframe(dq_phone_name["conflicts_df"], use_container_width=True)
-        st.download_button(
-            "Download phone-name conflicts (CSV)",
-            data=dq_phone_name["conflicts_df"].to_csv(index=False).encode("utf-8"),
-            file_name="data_quality_phone_name_conflicts.csv",
-            mime="text/csv",
-            key="dl_dq_phone_name_conflicts",
-        )
+        if _is_unmapped(dq_parent_col) or _is_unmapped(dq_phone_col):
+            st.warning("To run phone-name conflict check, map both: Full Parent Name and Parents phone.")
+        else:
+            dq_phone_name = parent_phone_name_conflicts_core(df, dq_parent_col, dq_phone_col)
+            st.dataframe(dq_phone_name["summary_df"], use_container_width=True)
+            st.dataframe(dq_phone_name["conflicts_df"], use_container_width=True)
+            st.download_button(
+                "Download phone-name conflicts (CSV)",
+                data=dq_phone_name["conflicts_df"].to_csv(index=False).encode("utf-8"),
+                file_name="data_quality_phone_name_conflicts.csv",
+                mime="text/csv",
+                key="dl_dq_phone_name_conflicts",
+            )
 
     # -----------------------------
     # Indicators
@@ -1435,64 +1524,67 @@ def main():
                     f"Could not auto-detect columns: {', '.join(missing_cols)}. "
                     "Please map them manually below."
                 )
-                resolved_cols["Child Full Name"] = st.selectbox(
+                resolved_cols["Child Full Name"] = pick_col_with_default(
+                    df,
                     "Child Full Name column",
-                    df.columns.tolist(),
-                    index=_find_default_index(df.columns.tolist(), "Child Full Name"),
+                    "Child Full Name",
                     key=f"m_child_full_name__{sheet}",
                 )
-                resolved_cols["Full Parent Name"] = st.selectbox(
+                resolved_cols["Full Parent Name"] = pick_col_with_default(
+                    df,
                     "Full Parent Name column",
-                    df.columns.tolist(),
-                    index=_find_default_index(df.columns.tolist(), "Full Parent Name"),
+                    "Full Parent Name",
                     key=f"m_full_parent_name__{sheet}",
                 )
-                resolved_cols["Parents phone"] = st.selectbox(
+                resolved_cols["Parents phone"] = pick_col_with_default(
+                    df,
                     "Parents phone column",
-                    df.columns.tolist(),
-                    index=_find_default_index(df.columns.tolist(), "Parents phone"),
+                    "Parents phone",
                     key=f"m_parents_phone__{sheet}",
                 )
 
-            first_meta = pd.DataFrame(
-                {
-                    "_row_index": monthly_struct["first_row_index"],
-                    "First structured date": monthly_struct["first_dt"],
-                    "First structured program": monthly_struct["first_program"],
-                }
-            ).dropna(subset=["_row_index"])
-            if selected_month != "All months":
-                first_meta = first_meta[
-                    first_meta["First structured date"].dt.to_period("M").astype(str) == selected_month
-                ]
-
-            if first_meta.empty:
-                st.info(f"No first-time structured completions found for {selected_month}.")
+            if any(_is_unmapped(resolved_cols[c]) for c in required_cols):
+                st.warning("To show children list, map all columns: Child Full Name, Full Parent Name, Parents phone.")
             else:
-                first_meta["_row_index"] = first_meta["_row_index"].astype(int)
-                selected_cols = [resolved_cols[c] for c in required_cols]
-                child_list_df = df.loc[first_meta["_row_index"], selected_cols].reset_index(drop=True)
-                child_list_df.columns = required_cols
-                child_list_df = pd.concat(
-                    [
-                        child_list_df,
-                        first_meta[["First structured date", "First structured program"]].reset_index(drop=True),
-                    ],
-                    axis=1,
-                )
-                child_list_df["First structured date"] = pd.to_datetime(
-                    child_list_df["First structured date"], errors="coerce"
-                ).dt.date
+                first_meta = pd.DataFrame(
+                    {
+                        "_row_index": monthly_struct["first_row_index"],
+                        "First structured date": monthly_struct["first_dt"],
+                        "First structured program": monthly_struct["first_program"],
+                    }
+                ).dropna(subset=["_row_index"])
+                if selected_month != "All months":
+                    first_meta = first_meta[
+                        first_meta["First structured date"].dt.to_period("M").astype(str) == selected_month
+                    ]
 
-                st.caption(f"Children in first-time structured list: {len(child_list_df):,}")
-                st.dataframe(child_list_df, use_container_width=True)
-                st.download_button(
-                    "Download children list (CSV)",
-                    data=child_list_df.to_csv(index=False).encode("utf-8"),
-                    file_name=f"structured_mhpss_children_list_{month_suffix}.csv",
-                    mime="text/csv",
-                    key="dl_struct_monthly_children_list",
-                )
+                if first_meta.empty:
+                    st.info(f"No first-time structured completions found for {selected_month}.")
+                else:
+                    first_meta["_row_index"] = first_meta["_row_index"].astype(int)
+                    selected_cols = [resolved_cols[c] for c in required_cols]
+                    child_list_df = df.loc[first_meta["_row_index"], selected_cols].reset_index(drop=True)
+                    child_list_df.columns = required_cols
+                    child_list_df = pd.concat(
+                        [
+                            child_list_df,
+                            first_meta[["First structured date", "First structured program"]].reset_index(drop=True),
+                        ],
+                        axis=1,
+                    )
+                    child_list_df["First structured date"] = pd.to_datetime(
+                        child_list_df["First structured date"], errors="coerce"
+                    ).dt.date
+
+                    st.caption(f"Children in first-time structured list: {len(child_list_df):,}")
+                    st.dataframe(child_list_df, use_container_width=True)
+                    st.download_button(
+                        "Download children list (CSV)",
+                        data=child_list_df.to_csv(index=False).encode("utf-8"),
+                        file_name=f"structured_mhpss_children_list_{month_suffix}.csv",
+                        mime="text/csv",
+                        key="dl_struct_monthly_children_list",
+                    )
     
     # -----------------------------
     # CP Services Indicator
@@ -1716,58 +1808,61 @@ def main():
                     f"Could not auto-detect columns: {', '.join(missing_cols)}. "
                     "Please map them manually below."
                 )
-                resolved_cols["Child Full Name"] = st.selectbox(
+                resolved_cols["Child Full Name"] = pick_col_with_default(
+                    df,
                     "Child Full Name column",
-                    df.columns.tolist(),
-                    index=_find_default_index(df.columns.tolist(), "Child Full Name"),
+                    "Child Full Name",
                     key=f"cp_child_full_name__{sheet}",
                 )
-                resolved_cols["Full Parent Name"] = st.selectbox(
+                resolved_cols["Full Parent Name"] = pick_col_with_default(
+                    df,
                     "Full Parent Name column",
-                    df.columns.tolist(),
-                    index=_find_default_index(df.columns.tolist(), "Full Parent Name"),
+                    "Full Parent Name",
                     key=f"cp_full_parent_name__{sheet}",
                 )
-                resolved_cols["Parents phone"] = st.selectbox(
+                resolved_cols["Parents phone"] = pick_col_with_default(
+                    df,
                     "Parents phone column",
-                    df.columns.tolist(),
-                    index=_find_default_index(df.columns.tolist(), "Parents phone"),
+                    "Parents phone",
                     key=f"cp_parents_phone__{sheet}",
                 )
 
-            cp_first_meta = cp_monthly["first_meta"].copy()
-            if cp_selected_month != "All months":
-                cp_first_meta = cp_first_meta[
-                    cp_first_meta["First indicator date"].dt.to_period("M").astype(str) == cp_selected_month
-                ]
-
-            if cp_first_meta.empty:
-                st.info(f"No CP indicator achievements found for {cp_selected_month}.")
+            if any(_is_unmapped(resolved_cols[c]) for c in required_cols):
+                st.warning("To show CP children list, map all columns: Child Full Name, Full Parent Name, Parents phone.")
             else:
-                cp_first_meta["_row_index"] = cp_first_meta["_row_index"].astype(int)
-                selected_cols = [resolved_cols[c] for c in required_cols]
-                cp_child_list_df = df.loc[cp_first_meta["_row_index"], selected_cols].reset_index(drop=True)
-                cp_child_list_df.columns = required_cols
-                cp_child_list_df = pd.concat(
-                    [
-                        cp_child_list_df,
-                        cp_first_meta[["First indicator date", "Gender", "Total sessions"]].reset_index(drop=True),
-                    ],
-                    axis=1,
-                )
-                cp_child_list_df["First indicator date"] = pd.to_datetime(
-                    cp_child_list_df["First indicator date"], errors="coerce"
-                ).dt.date
+                cp_first_meta = cp_monthly["first_meta"].copy()
+                if cp_selected_month != "All months":
+                    cp_first_meta = cp_first_meta[
+                        cp_first_meta["First indicator date"].dt.to_period("M").astype(str) == cp_selected_month
+                    ]
 
-                st.caption(f"Children in CP indicator list: {len(cp_child_list_df):,}")
-                st.dataframe(cp_child_list_df, use_container_width=True)
-                st.download_button(
-                    "Download CP indicator children list (CSV)",
-                    data=cp_child_list_df.to_csv(index=False).encode("utf-8"),
-                    file_name=f"cp_indicator_children_list_{cp_month_suffix}.csv",
-                    mime="text/csv",
-                    key="dl_cp_monthly_children_list",
-                )
+                if cp_first_meta.empty:
+                    st.info(f"No CP indicator achievements found for {cp_selected_month}.")
+                else:
+                    cp_first_meta["_row_index"] = cp_first_meta["_row_index"].astype(int)
+                    selected_cols = [resolved_cols[c] for c in required_cols]
+                    cp_child_list_df = df.loc[cp_first_meta["_row_index"], selected_cols].reset_index(drop=True)
+                    cp_child_list_df.columns = required_cols
+                    cp_child_list_df = pd.concat(
+                        [
+                            cp_child_list_df,
+                            cp_first_meta[["First indicator date", "Gender", "Total sessions"]].reset_index(drop=True),
+                        ],
+                        axis=1,
+                    )
+                    cp_child_list_df["First indicator date"] = pd.to_datetime(
+                        cp_child_list_df["First indicator date"], errors="coerce"
+                    ).dt.date
+
+                    st.caption(f"Children in CP indicator list: {len(cp_child_list_df):,}")
+                    st.dataframe(cp_child_list_df, use_container_width=True)
+                    st.download_button(
+                        "Download CP indicator children list (CSV)",
+                        data=cp_child_list_df.to_csv(index=False).encode("utf-8"),
+                        file_name=f"cp_indicator_children_list_{cp_month_suffix}.csv",
+                        mime="text/csv",
+                        key="dl_cp_monthly_children_list",
+                    )
 
         st.divider()
         st.subheader("Adults: CP services indicator (>=2 total sessions)")
@@ -1902,43 +1997,45 @@ def main():
                 excel_letter_fallback="M",
             )
             if adult_name_col is None:
-                adult_name_col = st.selectbox(
+                adult_name_col = pick_col_with_default(
+                    adult_df,
                     "Adult Full Name column",
-                    adult_df.columns.tolist(),
-                    index=_find_default_index(adult_df.columns.tolist(), "Full Name"),
+                    "Full Name",
                     key=f"adult_cp_full_name__{adult_sheet}",
                 )
-
-            adult_first_meta = adult_cp_monthly["first_meta"].copy()
-            if adult_cp_selected_month != "All months":
-                adult_first_meta = adult_first_meta[
-                    adult_first_meta["First indicator date"].dt.to_period("M").astype(str) == adult_cp_selected_month
-                ]
-            if adult_first_meta.empty:
-                st.info(f"No adult CP indicator achievements found for {adult_cp_selected_month}.")
+            if _is_unmapped(adult_name_col):
+                st.warning("To show adults list, map Adult Full Name column.")
             else:
-                adult_first_meta["_row_index"] = adult_first_meta["_row_index"].astype(int)
-                adult_list_df = adult_df.loc[adult_first_meta["_row_index"], [adult_name_col]].reset_index(drop=True)
-                adult_list_df.columns = ["Full Name"]
-                adult_list_df = pd.concat(
-                    [
-                        adult_list_df,
-                        adult_first_meta[["First indicator date", "Gender", "Total sessions"]].reset_index(drop=True),
-                    ],
-                    axis=1,
-                )
-                adult_list_df["First indicator date"] = pd.to_datetime(
-                    adult_list_df["First indicator date"], errors="coerce"
-                ).dt.date
+                adult_first_meta = adult_cp_monthly["first_meta"].copy()
+                if adult_cp_selected_month != "All months":
+                    adult_first_meta = adult_first_meta[
+                        adult_first_meta["First indicator date"].dt.to_period("M").astype(str) == adult_cp_selected_month
+                    ]
+                if adult_first_meta.empty:
+                    st.info(f"No adult CP indicator achievements found for {adult_cp_selected_month}.")
+                else:
+                    adult_first_meta["_row_index"] = adult_first_meta["_row_index"].astype(int)
+                    adult_list_df = adult_df.loc[adult_first_meta["_row_index"], [adult_name_col]].reset_index(drop=True)
+                    adult_list_df.columns = ["Full Name"]
+                    adult_list_df = pd.concat(
+                        [
+                            adult_list_df,
+                            adult_first_meta[["First indicator date", "Gender", "Total sessions"]].reset_index(drop=True),
+                        ],
+                        axis=1,
+                    )
+                    adult_list_df["First indicator date"] = pd.to_datetime(
+                        adult_list_df["First indicator date"], errors="coerce"
+                    ).dt.date
 
-                st.dataframe(adult_list_df, use_container_width=True)
-                st.download_button(
-                    "Download adult CP indicator list (CSV)",
-                    data=adult_list_df.to_csv(index=False).encode("utf-8"),
-                    file_name=f"adult_cp_indicator_list_{adult_cp_month_suffix}.csv",
-                    mime="text/csv",
-                    key="dl_adult_cp_monthly_list",
-                )
+                    st.dataframe(adult_list_df, use_container_width=True)
+                    st.download_button(
+                        "Download adult CP indicator list (CSV)",
+                        data=adult_list_df.to_csv(index=False).encode("utf-8"),
+                        file_name=f"adult_cp_indicator_list_{adult_cp_month_suffix}.csv",
+                        mime="text/csv",
+                        key="dl_adult_cp_monthly_list",
+                    )
 
         if st.checkbox("Enable export list: adults meeting indicator (>=2 sessions)", key="adult_cp_export_chk"):
             if use_adult_id:
