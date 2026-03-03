@@ -40,6 +40,7 @@ All notable changes to this project are documented in this file.
 ### Quality
 - Added dependency upper bounds in `requirements.txt`.
 - Improved local quality workflow with `pytest`, `ruff`, and `mypy` execution paths documented in README.
+- Added typing support for pandas in the local toolchain (`pandas-stubs`) and aligned type annotations so `mypy` passes on `app.py`, `core.py`, `utils.py`, and `config.py`.
 
 ## [1.3.0] - 2026-02-25
 

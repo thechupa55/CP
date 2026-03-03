@@ -221,7 +221,7 @@ def _resolve_with_aliases(options: list[str], aliases: list[str], excel_letter_f
 
 @st.cache_data(show_spinner=False)
 def get_sheet_names(file_bytes: bytes) -> list[str]:
-    return pd.ExcelFile(io.BytesIO(file_bytes)).sheet_names
+    return [str(name) for name in pd.ExcelFile(io.BytesIO(file_bytes)).sheet_names]
 
 
 @st.cache_data(show_spinner=False)

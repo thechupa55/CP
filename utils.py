@@ -1,4 +1,7 @@
 import io
+from collections.abc import Iterable
+from typing import Any
+
 import pandas as pd
 
 TRUE_SET = {"yes", "y", "true", "1", "completed", "done"}
@@ -14,8 +17,8 @@ def to_num(series: pd.Series) -> pd.Series:
     return n.fillna(0)
 
 
-def make_unique_columns(cols) -> list[str]:
-    seen = {}
+def make_unique_columns(cols: Iterable[Any]) -> list[str]:
+    seen: dict[str, int] = {}
     out = []
     for c in cols:
         c = str(c).strip()

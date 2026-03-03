@@ -67,7 +67,8 @@ def data_quality_dashboard_core(
             tmp = pd.DataFrame({"_id": id_series, "_gender": g})
             tmp = tmp[tmp["_id"].notna()].copy()
             # Ignore blanks in conflict detection.
-            tmp["_gender"] = tmp["_gender"].where(tmp["_gender"].notna() & tmp["_gender"].ne(""), pd.NA)
+            invalid_gender = tmp["_gender"].isna() | tmp["_gender"].eq("")
+            tmp.loc[invalid_gender, "_gender"] = pd.NA
             conflicts = (
                 tmp.groupby("_id")["_gender"]
                 .agg(lambda s: sorted(set([x for x in s.dropna().tolist()])))
@@ -285,7 +286,7 @@ def structured_core(
     only_one_by_program = prog_by[only_one_mask].sum().astype(int)
 
     def combo_label(row: pd.Series) -> str:
-        picked = [k for k, v in row.items() if bool(v)]
+        picked = [str(k) for k, v in row.items() if bool(v)]
         return "NONE" if not picked else "+".join(picked)
 
     combo_series = prog_by.apply(combo_label, axis=1)
@@ -922,12 +923,7 @@ def disability_gender_core(
         tmp = tmp[tmp["_id"].notna()].copy()
         base = (
             tmp.groupby("_id")
-            .agg(
-                {
-                    "Disability status": lambda s: normalize_text(s).iloc[0],
-                    "Gender": lambda s: normalize_text(s).str.lower().iloc[0],
-                }
-            )
+            .agg({"Disability status": "first", "Gender": "first"})
             .reset_index(drop=True)
         )
         base["Gender"] = base["Gender"].where(base["Gender"].isin(["boy", "girl"]), "unknown")
@@ -1000,12 +996,7 @@ def idp_status_gender_core(
         tmp = tmp[tmp["_id"].notna()].copy()
         base = (
             tmp.groupby("_id")
-            .agg(
-                {
-                    "Status IDP": lambda s: normalize_text(s).str.lower().iloc[0],
-                    "Gender": lambda s: normalize_text(s).str.lower().iloc[0],
-                }
-            )
+            .agg({"Status IDP": "first", "Gender": "first"})
             .reset_index(drop=True)
         )
         base["Status IDP"] = base["Status IDP"].where(base["Status IDP"].isin(["local", "idp", "returnee"]), "unknown")
