@@ -13,6 +13,8 @@ from config import (
     STRUCTURED_DEFAULTS,
 )
 from core import (
+    activities_participation_core,
+    activities_participation_monthly_core,
     child_name_duplicates_core,
     cp_services_indicator_adult_core,
     cp_services_indicator_adult_monthly_core,
@@ -112,6 +114,11 @@ MAPPING_STATE_KEY_STEMS = (
     "dis_gender__",
     "idp_status__",
     "idp_gender__",
+    "act_child_id__",
+    "act_site_type__",
+    "act_gender__",
+    "act_program__",
+    "act_date__",
 )
 MAPPING_STATE_EXACT_KEYS = (
     "structured_export_mode_ui",
@@ -422,6 +429,12 @@ def main():
             index=_find_default_index(sheet_names, "Adult Info"),
             key="sidebar_adult_sheet",
         )
+        attendance_sheet = st.selectbox(
+            "Attendance sheet",
+            sheet_names,
+            index=_find_default_index(sheet_names, "Attendance List"),
+            key="sidebar_attendance_sheet",
+        )
     
     try:
         df = read_excel_sheet(file_bytes, sheet)
@@ -435,11 +448,20 @@ def main():
         st.error(f"Cannot read selected adult sheet: {e}")
         st.stop()
 
+    try:
+        attendance_df = read_excel_sheet(file_bytes, attendance_sheet)
+    except Exception as e:
+        st.error(f"Cannot read selected attendance sheet: {e}")
+        st.stop()
+
     df.columns = df.columns.astype(str).str.strip()
     df.columns = make_unique_columns(df.columns)
     adult_df.columns = adult_df.columns.astype(str).str.strip()
     adult_df.columns = make_unique_columns(adult_df.columns)
+    attendance_df.columns = attendance_df.columns.astype(str).str.strip()
+    attendance_df.columns = make_unique_columns(attendance_df.columns)
     adult_cols = adult_df.columns.tolist()
+    attendance_cols = attendance_df.columns.tolist()
 
     # On file switch, force re-mapping of key CP fields so stale values from
     # a previous file do not survive.
@@ -469,10 +491,21 @@ def main():
             f"adult_cp_youth_resilience__{adult_sheet}",
             ["Unstructured MHPSS Activities Youth Resilience", "Youth Resilience"],
         )
+        activity_defaults = [
+            (f"act_child_id__{attendance_sheet}", ["Child ID"], "C"),
+            (f"act_site_type__{attendance_sheet}", ["Mobile or CFS"], "I"),
+            (f"act_gender__{attendance_sheet}", ["Gender"], "L"),
+            (f"act_program__{attendance_sheet}", ["Program"], "R"),
+            (f"act_date__{attendance_sheet}", ["Date of attendence", "Date of attendance"], "J"),
+        ]
+        for state_key, aliases, letter in activity_defaults:
+            resolved = _resolve_with_aliases(attendance_cols, aliases, excel_letter_fallback=letter)
+            st.session_state[state_key] = resolved if resolved is not None else EMPTY_COL_OPTION
 
     with st.sidebar:
         st.caption(f"Child rows: {len(df):,} | Columns: {len(df.columns):,}")
         st.caption(f"Adult rows: {len(adult_df):,} | Columns: {len(adult_df.columns):,}")
+        st.caption(f"Attendance rows: {len(attendance_df):,} | Columns: {len(attendance_df.columns):,}")
         id_col = st.selectbox("Optional: Unique Child ID column", ["(none)"] + df.columns.tolist(), key="sidebar_id")
         use_id = id_col != "(none)"
         if use_id and df[id_col].isna().any():
@@ -735,16 +768,64 @@ def main():
                 adult_df, use_id_v, id_col_v, completed_col, date_col, gender_col
             ),
         )
+
+    def _activities_cached(
+        child_id_col: str,
+        site_type_col: str,
+        program_col: str,
+        gender_col: str,
+        date_col: str,
+    ):
+        key = ("activities", child_id_col, site_type_col, program_col, gender_col, date_col)
+        return _cache_get(
+            key,
+            lambda: {
+                "summary": activities_participation_core(
+                    attendance_df,
+                    child_id_col,
+                    site_type_col,
+                    program_col,
+                    gender_col,
+                ),
+                "monthly": activities_participation_monthly_core(
+                    attendance_df,
+                    child_id_col,
+                    site_type_col,
+                    program_col,
+                    gender_col,
+                    date_col,
+                ),
+            },
+        )
+
+    def _activities_summary_cached(
+        child_id_col: str,
+        site_type_col: str,
+        program_col: str,
+        gender_col: str,
+    ):
+        key = ("activities_summary", child_id_col, site_type_col, program_col, gender_col)
+        return _cache_get(
+            key,
+            lambda: activities_participation_core(
+                attendance_df,
+                child_id_col,
+                site_type_col,
+                program_col,
+                gender_col,
+            ),
+        )
     
     # =============================
     # Tabs
     # =============================
-    tab_preview, tab_data_quality, tab_indicators, tab_indicator_monthly, tab_cp, tab_struct, tab_struct_month, tab_sf_month, tab_geo, tab_disability, tab_idp, tab_downloads = st.tabs(
+    tab_preview, tab_data_quality, tab_indicators, tab_indicator_monthly, tab_activities, tab_cp, tab_struct, tab_struct_month, tab_sf_month, tab_geo, tab_disability, tab_idp, tab_downloads = st.tabs(
         [
             "Preview",
             "Data Quality",
             "Indicators",
             "Indicator Monthly",
+            "Activities",
             "CP Services Indicator",
             "Structured",
             "Structured Monthly",
@@ -1229,6 +1310,160 @@ def main():
 
         st.markdown("**3) # of individuals who attended Safe Families positive parenting group or children’s sessions**")
         st.dataframe(safe_families_indicator_monthly_table, use_container_width=True)
+
+    # -----------------------------
+    # Activities
+    # -----------------------------
+    with tab_activities:
+        st.subheader("Activities")
+        st.caption("Source: Attendance List. Counting is strictly by unique Child ID per activity.")
+
+        a1, a2 = st.columns(2)
+        with a1:
+            act_child_id_col = pick_col_with_default(
+                attendance_df,
+                "Child ID column (C)",
+                "Child ID",
+                key=f"act_child_id__{attendance_sheet}",
+            )
+            act_site_type_col = pick_col_with_default(
+                attendance_df,
+                "Mobile or CFS column (I)",
+                "Mobile or CFS",
+                key=f"act_site_type__{attendance_sheet}",
+            )
+        with a2:
+            act_gender_col = pick_col_with_default(
+                attendance_df,
+                "Gender column (L)",
+                "Gender",
+                key=f"act_gender__{attendance_sheet}",
+            )
+            act_program_col = pick_col_with_default(
+                attendance_df,
+                "Program column (R)",
+                "Program",
+                key=f"act_program__{attendance_sheet}",
+            )
+            act_date_col = pick_col_with_default(
+                attendance_df,
+                "Date of attendance column (J)",
+                "Date of attendence",
+                key=f"act_date__{attendance_sheet}",
+            )
+
+        required_activity_mapping = {
+            "Child ID": act_child_id_col,
+            "Mobile or CFS": act_site_type_col,
+            "Gender": act_gender_col,
+            "Program": act_program_col,
+        }
+        missing_activity_mapping = [
+            label for label, col_name in required_activity_mapping.items() if _is_unmapped(col_name)
+        ]
+        if missing_activity_mapping:
+            missing_text = ", ".join(missing_activity_mapping)
+            st.warning(f"Select required Attendance List columns first: {missing_text}.")
+            st.session_state.pop("activities_cached", None)
+        else:
+            activities_summary = _activities_summary_cached(
+                act_child_id_col,
+                act_site_type_col,
+                act_program_col,
+                act_gender_col,
+            )
+
+            st.markdown("**Overall by activity (unique only on activity lvl)**")
+            st.dataframe(activities_summary, use_container_width=True)
+            st.download_button(
+                "Download activities summary (CSV)",
+                data=activities_summary.to_csv(index=False).encode("utf-8"),
+                file_name="activities_summary.csv",
+                mime="text/csv",
+                key="dl_activities_summary",
+            )
+
+            if _is_unmapped(act_date_col):
+                st.warning("Select 'Date of attendance' column to generate monthly breakdown.")
+                st.session_state["activities_cached"] = {"summary": activities_summary, "monthly": None}
+            else:
+                activities_all = _activities_cached(
+                    act_child_id_col,
+                    act_site_type_col,
+                    act_program_col,
+                    act_gender_col,
+                    act_date_col,
+                )
+                activities_monthly = activities_all["monthly"]
+
+                st.markdown("**Monthly by activity (unique by Date of attendance inside month only)**")
+                static_name = "Recreational activities (static)"
+                mobile_name = "Recreational activities (mobile)"
+                eore_name = "Provision of Explosive Ordnance Risk Education (EORE)"
+                tab_labels = [static_name, mobile_name, "R_static+R_mobile", eore_name]
+                mt1, mt2, mt3, mt4 = st.tabs(tab_labels)
+
+                def _render_activity_monthly_tab(tab_obj, tab_label: str, activity_name: str):
+                    with tab_obj:
+                        sub = activities_monthly[activities_monthly["Activity"] == activity_name].copy()
+                        if sub.empty:
+                            st.info("No data for this activity.")
+                            return
+                        sub = sub.drop(columns=["Activity"])
+                        st.dataframe(sub, use_container_width=True)
+                        safe_name = tab_label.replace(" ", "_").replace("(", "").replace(")", "").replace("+", "_plus_")
+                        st.download_button(
+                            f"Download {tab_label} monthly (CSV)",
+                            data=sub.to_csv(index=False).encode("utf-8"),
+                            file_name=f"activities_monthly_{safe_name}.csv",
+                            mime="text/csv",
+                            key=f"dl_activities_monthly_{safe_name}",
+                        )
+
+                _render_activity_monthly_tab(mt1, static_name, static_name)
+                _render_activity_monthly_tab(mt2, mobile_name, mobile_name)
+
+                with mt3:
+                    combined = activities_monthly[
+                        activities_monthly["Activity"].isin([static_name, mobile_name])
+                    ].copy()
+                    if combined.empty:
+                        st.info("No data for this activity.")
+                    else:
+                        metric_cols = [
+                            c for c in combined.columns if c not in ("Activity", "Gender")
+                        ]
+                        combined = (
+                            combined.drop(columns=["Activity"])
+                            .groupby("Gender", as_index=False)[metric_cols]
+                            .sum()
+                        )
+                        gender_order = ["girl", "boy", "female", "male", "Total"]
+                        combined["Gender"] = pd.Categorical(
+                            combined["Gender"], categories=gender_order, ordered=True
+                        )
+                        combined = combined.sort_values("Gender").reset_index(drop=True)
+                        st.dataframe(combined, use_container_width=True)
+                        st.download_button(
+                            "Download R_static+R_mobile monthly (CSV)",
+                            data=combined.to_csv(index=False).encode("utf-8"),
+                            file_name="activities_monthly_R_static_plus_R_mobile.csv",
+                            mime="text/csv",
+                            key="dl_activities_monthly_R_static_plus_R_mobile",
+                        )
+
+                _render_activity_monthly_tab(mt4, eore_name, eore_name)
+                st.download_button(
+                    "Download activities monthly (CSV)",
+                    data=activities_monthly.to_csv(index=False).encode("utf-8"),
+                    file_name="activities_monthly.csv",
+                    mime="text/csv",
+                    key="dl_activities_monthly",
+                )
+                st.session_state["activities_cached"] = {
+                    "summary": activities_summary,
+                    "monthly": activities_monthly,
+                }
     
     # -----------------------------
     # Structured
@@ -2635,6 +2870,7 @@ def main():
         structured_cached = st.session_state.get("structured_cached")
         sf_cached = st.session_state.get("safe_families_cached")
         sf_adult_cached = st.session_state.get("safe_families_adult_cached")
+        activities_cached = st.session_state.get("activities_cached")
         geo_cached = st.session_state.get("geography_cached")
         disability_cached = st.session_state.get("disability_cached")
         idp_cached = st.session_state.get("idp_cached")
@@ -2645,6 +2881,8 @@ def main():
             st.info("If you want Safe Families tables included in the Excel report, open 'Safe Families Monthly' tab once.")
         if not sf_adult_cached:
             st.info("If you want Adult Safe Families tables included in the Excel report, open 'Safe Families Monthly' tab once.")
+        if not activities_cached:
+            st.info("If you want Activities tables included in the Excel report, open 'Activities' tab once.")
         if not geo_cached:
             st.info("If you want Geography tables included in the Excel report, open 'Geography' tab once.")
         if not disability_cached:
@@ -2676,6 +2914,10 @@ def main():
         if sf_adult_cached:
             sheets["Adult_SF_Monthly_Gender"] = sf_adult_cached["monthly"]
             sheets["Adult_SF_Summary"] = sf_adult_cached["summary"]
+        if activities_cached:
+            sheets["Activities_Summary"] = activities_cached.get("summary")
+            if activities_cached.get("monthly") is not None:
+                sheets["Activities_Monthly"] = activities_cached["monthly"]
 
         if geo_cached:
             sheets["Geo_By_Oblast"] = geo_cached["by_oblast"]

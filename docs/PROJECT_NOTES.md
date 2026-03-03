@@ -31,6 +31,16 @@
   - columns: months + `Overall`.
 - `total` includes unknown-gender counts from child and adult data, but unknown is not shown as a separate row.
 
+## Activities Tab (Started 2026-03-03)
+- Began implementing a separate `Activities` tab based on the `Attendance List` sheet.
+- Added strict Child-ID counting rules for activity-level outputs.
+- Added monthly activity view using `Date of attendance` with month columns and fixed gender row order.
+- Added split monthly subtabs:
+  - `Recreational activities (static)`
+  - `Recreational activities (mobile)`
+  - `R_static+R_mobile`
+  - `Provision of Explosive Ordnance Risk Education (EORE)`
+
 ## Date Parsing
 - `parse_mixed_date` uses deterministic parsing order:
   1. `YYYY-MM-DD`

@@ -5,10 +5,18 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Added
+- Started on 2026-03-03: implementation of a dedicated `Activities` tab for activity display and counting.
 - Added `Indicator Monthly` tab (right after `Indicators`) with monthly breakdown tables for all 3 headline indicators.
+- Added `Activities` tab based on `Attendance List` sheet with strict Child-ID counting for:
+  - `Recreational activities (static)` (`program = recreational_activity` + `Mobile or CFS = CFS`)
+  - `Recreational activities (mobile)` (`program = recreational_activity` + `Mobile or CFS = Mobile`)
+  - `Provision of Explosive Ordnance Risk Education (EORE)` (`program = EORE`)
+  - output columns: `girl`, `boy`, `female`, `male`, `Total`.
+  - added monthly breakdown by `Date of attendance` with the same gender/total columns.
 - Added transposed monthly layout in `Indicator Monthly`:
   - rows: `# of girls`, `# of boys`, `# of women`, `# of men`, `total`
   - month columns + `Overall` summary column.
+- Added third sidebar sheet selector `Attendance sheet` with default `Attendance List`.
 - Extended child CP services programs in CP indicator logic and UI:
   - added `SEL`, `SOCR`, `GBV`, `LA`
   - kept `EORE` and updated expected column order.

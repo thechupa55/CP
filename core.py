@@ -1041,6 +1041,155 @@ def idp_status_gender_core(
     }
 
 
+def activities_participation_core(
+    df: pd.DataFrame,
+    id_col: str,
+    site_type_col: str,
+    program_col: str,
+    gender_col: str,
+) -> pd.DataFrame:
+    id_key = df[id_col].astype("string").str.strip()
+    site = df[site_type_col].astype("string").str.strip().str.casefold()
+    program = df[program_col].astype("string").str.strip().str.casefold()
+    gender = df[gender_col].astype("string").str.strip().str.casefold()
+
+    valid_id = id_key.notna() & id_key.ne("")
+    base = pd.DataFrame(
+        {
+            "_id": id_key.where(valid_id),
+            "_site": site,
+            "_program": program,
+            "_gender": gender,
+        }
+    )
+
+    def count_activity(mask: pd.Series) -> dict[str, int | str]:
+        participants = base.loc[mask & base["_id"].notna(), ["_id", "_gender"]].drop_duplicates("_id")
+        counts = participants["_gender"].value_counts()
+        return {
+            "Activity": "",
+            "girl": int(counts.get("girl", 0)),
+            "boy": int(counts.get("boy", 0)),
+            "female": int(counts.get("female", 0)),
+            "male": int(counts.get("male", 0)),
+            "Total": int(len(participants)),
+        }
+
+    static_counts = count_activity((base["_program"] == "recreational_activity") & (base["_site"] == "cfs"))
+    static_counts["Activity"] = "Recreational activities (static)"
+
+    mobile_counts = count_activity((base["_program"] == "recreational_activity") & (base["_site"] == "mobile"))
+    mobile_counts["Activity"] = "Recreational activities (mobile)"
+
+    eore_counts = count_activity(base["_program"] == "eore")
+    eore_counts["Activity"] = "Provision of Explosive Ordnance Risk Education (EORE)"
+
+    return pd.DataFrame([static_counts, mobile_counts, eore_counts])
+
+
+def activities_participation_monthly_core(
+    df: pd.DataFrame,
+    id_col: str,
+    site_type_col: str,
+    program_col: str,
+    gender_col: str,
+    date_col: str,
+) -> pd.DataFrame:
+    id_key = df[id_col].astype("string").str.strip()
+    site = df[site_type_col].astype("string").str.strip().str.casefold()
+    program = df[program_col].astype("string").str.strip().str.casefold()
+    gender = df[gender_col].astype("string").str.strip().str.casefold()
+    dt = parse_mixed_date(df[date_col])
+
+    valid_id = id_key.notna() & id_key.ne("")
+    base = pd.DataFrame(
+        {
+            "_id": id_key.where(valid_id),
+            "_site": site,
+            "_program": program,
+            "_gender": gender,
+            "_dt": dt,
+        }
+    )
+
+    def monthly_activity(mask: pd.Series, activity_name: str) -> pd.DataFrame:
+        rows = base.loc[mask & base["_id"].notna() & base["_dt"].notna(), ["_id", "_gender", "_dt"]].copy()
+        if rows.empty:
+            return pd.DataFrame(columns=["Activity", "Month", "girl", "boy", "female", "male"])
+
+        rows["Month"] = rows["_dt"].dt.to_period("M").astype(str)
+        # Strict per-activity per-month unique Child ID counting.
+        rows = rows.sort_values(["_id", "Month"]).drop_duplicates(["_id", "Month"], keep="first")
+
+        monthly = (
+            rows.groupby(["Month", "_gender"])
+            .size()
+            .reset_index(name="Count")
+            .pivot(index="Month", columns="_gender", values="Count")
+            .fillna(0)
+            .astype(int)
+            .reset_index()
+        )
+        for col_name in ("girl", "boy", "female", "male"):
+            if col_name not in monthly.columns:
+                monthly[col_name] = 0
+        monthly["Activity"] = activity_name
+        return monthly[["Activity", "Month", "girl", "boy", "female", "male"]]
+
+    static_monthly = monthly_activity(
+        (base["_program"] == "recreational_activity") & (base["_site"] == "cfs"),
+        "Recreational activities (static)",
+    )
+    mobile_monthly = monthly_activity(
+        (base["_program"] == "recreational_activity") & (base["_site"] == "mobile"),
+        "Recreational activities (mobile)",
+    )
+    eore_monthly = monthly_activity(
+        base["_program"] == "eore",
+        "Provision of Explosive Ordnance Risk Education (EORE)",
+    )
+
+    out = pd.concat([static_monthly, mobile_monthly, eore_monthly], ignore_index=True)
+    if out.empty:
+        return pd.DataFrame(columns=["Activity", "Gender", "Total"])
+
+    monthly_long = out.melt(
+        id_vars=["Activity", "Month"],
+        value_vars=["girl", "boy", "female", "male"],
+        var_name="Gender",
+        value_name="Count",
+    )
+    monthly_wide = (
+        monthly_long.pivot_table(
+            index=["Activity", "Gender"],
+            columns="Month",
+            values="Count",
+            aggfunc="sum",
+            fill_value=0,
+        )
+        .astype(int)
+        .reset_index()
+    )
+
+    month_cols = [c for c in monthly_wide.columns if c not in ("Activity", "Gender")]
+    month_cols = sorted(month_cols)
+    monthly_wide["Total"] = monthly_wide[month_cols].sum(axis=1) if month_cols else 0
+
+    # Add per-activity total row for month columns and overall total.
+    totals_by_activity = (
+        monthly_wide.groupby("Activity", as_index=False)[month_cols + ["Total"]].sum()
+        if month_cols
+        else monthly_wide.groupby("Activity", as_index=False)[["Total"]].sum()
+    )
+    totals_by_activity["Gender"] = "Total"
+    monthly_wide = pd.concat([monthly_wide, totals_by_activity], ignore_index=True)
+
+    gender_order = ["girl", "boy", "female", "male", "Total"]
+    monthly_wide["Gender"] = pd.Categorical(monthly_wide["Gender"], categories=gender_order, ordered=True)
+    monthly_wide = monthly_wide.sort_values(["Activity", "Gender"]).reset_index(drop=True)
+    return monthly_wide[["Activity", "Gender", *month_cols, "Total"]]
+
+
 def safe_families_monthly_gender_core(
     df: pd.DataFrame,
     use_id: bool,
