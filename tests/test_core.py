@@ -5,6 +5,7 @@ from core import (
     activities_participation_monthly_core,
     disability_gender_core,
     geography_analysis_core,
+    p01_cp_services_from_attendance_core,
     structured_core,
 )
 from utils import parse_mixed_date
@@ -189,3 +190,75 @@ def test_activities_participation_monthly_core_counts_by_child_id_and_month():
     ].iloc[0]
     assert int(eore_total["2025-02"]) == 2
     assert int(eore_total["Total"]) == 2
+
+
+def test_p01_cp_services_from_attendance_core_conditions_and_totals():
+    df = pd.DataFrame(
+        {
+            "child_id": ["1", "2", "2", "3", "4", "4", "5"],
+            "program": ["EORE", "TEAM_UP", "HEART", "TEAM_UP", "JSWP", "safe families", "EORE"],
+            "date_att": [
+                "2025-01-05",
+                "2025-01-03",
+                "2025-02-10",
+                "2025-03-01",
+                "2025-01-10",
+                "2025-01-20",
+                "2025-02-15",
+            ],
+            "gender": ["girl", "boy", "boy", "male", "female", "female", "female"],
+            "age_group": ["10-14 years", "15-17 years", "15-17 years", "30-59 years", "18-29 years", "18-29 years", "60 years and older"],
+        }
+    )
+
+    result = p01_cp_services_from_attendance_core(
+        df,
+        id_col="child_id",
+        program_col="program",
+        date_col="date_att",
+        gender_col="gender",
+        age_group_col="age_group",
+    )
+    table = result["table"]
+    assert int(result["indicator_total"]) == 4  # ids: 1(A),2(B),4(B),5(A)
+
+    female_10_14 = table[(table["Sex"] == "Female") & (table["Age Group"] == "10-14 years")].iloc[0]
+    assert int(female_10_14["2025-01"]) == 1
+    assert int(female_10_14["Total"]) == 1
+
+    male_15_17 = table[(table["Sex"] == "Male") & (table["Age Group"] == "15-17 years")].iloc[0]
+    assert int(male_15_17["2025-02"]) == 1
+    assert int(male_15_17["Total"]) == 1
+
+    total_row = table[table["Sex"] == "Total"].iloc[0]
+    assert int(total_row["2025-01"]) == 2
+    assert int(total_row["2025-02"]) == 2
+    assert int(total_row["Total"]) == 4
+
+
+def test_p01_cascade_logic_uses_b_only_for_ids_without_eore():
+    df = pd.DataFrame(
+        {
+            "child_id": ["10", "10", "10"],
+            "program": ["TEAM_UP", "HEART", "EORE"],
+            "date_att": ["2025-01-01", "2025-01-05", "2025-02-10"],
+            "gender": ["boy", "boy", "boy"],
+            "age_group": ["15-17 years", "15-17 years", "15-17 years"],
+        }
+    )
+
+    result = p01_cp_services_from_attendance_core(
+        df,
+        id_col="child_id",
+        program_col="program",
+        date_col="date_att",
+        gender_col="gender",
+        age_group_col="age_group",
+    )
+    table = result["table"]
+
+    assert int(result["indicator_total"]) == 1
+    # With cascade logic, this ID is counted by condition A (EORE), so month must be 2025-02.
+    male_15_17 = table[(table["Sex"] == "Male") & (table["Age Group"] == "15-17 years")].iloc[0]
+    assert int(male_15_17.get("2025-01", 0)) == 0
+    assert int(male_15_17.get("2025-02", 0)) == 1

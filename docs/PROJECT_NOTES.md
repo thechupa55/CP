@@ -41,6 +41,18 @@
   - `R_static+R_mobile`
   - `Provision of Explosive Ordnance Risk Education (EORE)`
 
+## P01 DoS (Added 2026-03-04)
+- Added separate tab `P01 DoS` based on `Attendance List`.
+- P01 logic is cascade-based:
+  - Condition A (`EORE >= 1`) qualifies first.
+  - Condition B (`>=2` visits in non-EORE CP programs) is applied only to IDs without EORE.
+- P01 monthly table is disaggregated by:
+  - `Female` and `Male` in separate subtabs
+  - age groups (`0-59 months`, `5-9 years`, `10-14 years`, `15-17 years`, `18-29 years`, `30-59 years`, `60 years and older`)
+  - month columns + row/column totals.
+- Added P01 indicator banner in `Indicators` tab and duplicated P01 monthly view in `Indicator Monthly` as item `4)`.
+- File-signature check now uses content hash only (`len + md5`) to prevent theme-switch false resets.
+
 ## Date Parsing
 - `parse_mixed_date` uses deterministic parsing order:
   1. `YYYY-MM-DD`

@@ -25,6 +25,7 @@ from core import (
     idp_status_gender_core,
     parent_phone_name_conflicts_core,
     parent_name_phone_conflicts_core,
+    p01_cp_services_from_attendance_core,
     safe_families_monthly_gender_adult_core,
     safe_families_monthly_gender_core,
     structured_core,
@@ -119,9 +120,24 @@ MAPPING_STATE_KEY_STEMS = (
     "act_gender__",
     "act_program__",
     "act_date__",
+    "act_age_group__",
+    "p01_child_id__",
+    "p01_program__",
+    "p01_date__",
+    "p01_gender__",
+    "p01_age_group__",
 )
 MAPPING_STATE_EXACT_KEYS = (
     "structured_export_mode_ui",
+)
+ANALYSIS_CACHE_KEYS = (
+    "structured_cached",
+    "safe_families_cached",
+    "safe_families_adult_cached",
+    "activities_cached",
+    "geography_cached",
+    "disability_cached",
+    "idp_cached",
 )
 
 
@@ -361,7 +377,11 @@ def _set_preferred_or_empty(options: list[str], state_key: str, preferred_names:
 def _clear_mapping_session_state():
     # Clear stale mapping keys based on explicit registry.
     for k in list(st.session_state.keys()):
-        if k in MAPPING_STATE_EXACT_KEYS or any(k.startswith(stem) for stem in MAPPING_STATE_KEY_STEMS):
+        if (
+            k in MAPPING_STATE_EXACT_KEYS
+            or k in ANALYSIS_CACHE_KEYS
+            or any(k.startswith(stem) for stem in MAPPING_STATE_KEY_STEMS)
+        ):
             st.session_state.pop(k, None)
 
 
@@ -406,7 +426,8 @@ def main():
     
     try:
         file_bytes = uploaded.getvalue()
-        file_signature = f"{uploaded.name}|{len(file_bytes)}|{hashlib.md5(file_bytes).hexdigest()[:12]}"
+        # Use content-based signature only. File name can vary across reruns/UI interactions.
+        file_signature = f"{len(file_bytes)}|{hashlib.md5(file_bytes).hexdigest()[:12]}"
         file_changed = st.session_state.get("__active_file_signature") != file_signature
         if file_changed:
             st.session_state["__active_file_signature"] = file_signature
@@ -497,6 +518,12 @@ def main():
             (f"act_gender__{attendance_sheet}", ["Gender"], "L"),
             (f"act_program__{attendance_sheet}", ["Program"], "R"),
             (f"act_date__{attendance_sheet}", ["Date of attendence", "Date of attendance"], "J"),
+            (f"act_age_group__{attendance_sheet}", ["Age Group RegDate"], "M"),
+            (f"p01_child_id__{attendance_sheet}", ["Child ID"], "C"),
+            (f"p01_program__{attendance_sheet}", ["Program"], "R"),
+            (f"p01_date__{attendance_sheet}", ["Date of attendence", "Date of attendance"], "J"),
+            (f"p01_gender__{attendance_sheet}", ["Gender"], "L"),
+            (f"p01_age_group__{attendance_sheet}", ["Age Group RegDate"], "M"),
         ]
         for state_key, aliases, letter in activity_defaults:
             resolved = _resolve_with_aliases(attendance_cols, aliases, excel_letter_fallback=letter)
@@ -815,17 +842,38 @@ def main():
                 gender_col,
             ),
         )
+
+    def _p01_attendance_cached(
+        child_id_col: str,
+        program_col: str,
+        date_col: str,
+        gender_col: str,
+        age_group_col: str,
+    ):
+        key = ("p01_attendance", child_id_col, program_col, date_col, gender_col, age_group_col)
+        return _cache_get(
+            key,
+            lambda: p01_cp_services_from_attendance_core(
+                attendance_df,
+                child_id_col,
+                program_col,
+                date_col,
+                gender_col,
+                age_group_col,
+            ),
+        )
     
     # =============================
     # Tabs
     # =============================
-    tab_preview, tab_data_quality, tab_indicators, tab_indicator_monthly, tab_activities, tab_cp, tab_struct, tab_struct_month, tab_sf_month, tab_geo, tab_disability, tab_idp, tab_downloads = st.tabs(
+    tab_preview, tab_data_quality, tab_activities, tab_indicators, tab_indicator_monthly, tab_p01_dos, tab_cp, tab_struct, tab_struct_month, tab_sf_month, tab_geo, tab_disability, tab_idp, tab_downloads = st.tabs(
         [
             "Preview",
             "Data Quality",
+            "Activities",
             "Indicators",
             "Indicator Monthly",
-            "Activities",
+            "P01 DoS",
             "CP Services Indicator",
             "Structured",
             "Structured Monthly",
@@ -995,6 +1043,8 @@ def main():
         st.subheader("Indicators")
         child_cols = df.columns.tolist()
         adult_cols = adult_df.columns.tolist()
+        attendance_cols = attendance_df.columns.tolist()
+        attendance_cols = attendance_df.columns.tolist()
 
         structured_programs = [
             (
@@ -1063,6 +1113,32 @@ def main():
         )
         adult_cp_indicator = int(adult_cp_mask.sum())
 
+        p01_child_id_col = _get_selected_col(attendance_cols, f"p01_child_id__{attendance_sheet}", "Child ID")
+        p01_program_col = _get_selected_col(attendance_cols, f"p01_program__{attendance_sheet}", "Program")
+        p01_date_col = _get_selected_col(attendance_cols, f"p01_date__{attendance_sheet}", "Date of attendence")
+        p01_gender_col = _get_selected_col(attendance_cols, f"p01_gender__{attendance_sheet}", "Gender")
+        p01_age_group_col = _get_selected_col(attendance_cols, f"p01_age_group__{attendance_sheet}", "Age Group RegDate")
+        p01_required_cols = [
+            p01_child_id_col,
+            p01_program_col,
+            p01_date_col,
+            p01_gender_col,
+            p01_age_group_col,
+        ]
+        if any(_is_unmapped(c) for c in p01_required_cols):
+            p01_total_beneficiaries = 0
+            st.warning("P01 indicator requires Attendance List mapping (Child ID, Program, Date of attendance, Gender, Age Group RegDate).")
+        else:
+            p01_total_beneficiaries = int(
+                _p01_attendance_cached(
+                    p01_child_id_col,
+                    p01_program_col,
+                    p01_date_col,
+                    p01_gender_col,
+                    p01_age_group_col,
+                )["indicator_total"]
+            )
+
         sf_completed_col = _get_selected_col(
             child_cols, f"sf_comp__{sheet}", SAFE_FAMILIES_DEFAULT_NAMES["completed"]
         )
@@ -1096,6 +1172,11 @@ def main():
         render_indicator_banner(
             "# of individuals participating in child protection services",
             int(child_cp_indicator + adult_cp_indicator),
+            theme_mode,
+        )
+        render_indicator_banner(
+            "P01: Number of individual beneficiaries participating in Child Protection Services",
+            p01_total_beneficiaries,
             theme_mode,
         )
         render_indicator_banner(
@@ -1311,6 +1392,42 @@ def main():
         st.markdown("**3) # of individuals who attended Safe Families positive parenting group or children’s sessions**")
         st.dataframe(safe_families_indicator_monthly_table, use_container_width=True)
 
+        # 4) P01 from Attendance List.
+        p01_child_id_col = _get_selected_col(attendance_cols, f"p01_child_id__{attendance_sheet}", "Child ID")
+        p01_program_col = _get_selected_col(attendance_cols, f"p01_program__{attendance_sheet}", "Program")
+        p01_date_col = _get_selected_col(attendance_cols, f"p01_date__{attendance_sheet}", "Date of attendence")
+        p01_gender_col = _get_selected_col(attendance_cols, f"p01_gender__{attendance_sheet}", "Gender")
+        p01_age_group_col = _get_selected_col(attendance_cols, f"p01_age_group__{attendance_sheet}", "Age Group RegDate")
+        p01_required_cols = [
+            p01_child_id_col,
+            p01_program_col,
+            p01_date_col,
+            p01_gender_col,
+            p01_age_group_col,
+        ]
+        st.markdown("**4) P01: Number of individual beneficiaries participating in Child Protection Services**")
+        if any(_is_unmapped(c) for c in p01_required_cols):
+            st.warning("P01 table requires Attendance List mapping (Child ID, Program, Date of attendance, Gender, Age Group RegDate).")
+        else:
+            p01_indicator_monthly = _p01_attendance_cached(
+                p01_child_id_col,
+                p01_program_col,
+                p01_date_col,
+                p01_gender_col,
+                p01_age_group_col,
+            )["table"]
+            p01_tabs = st.tabs(["Female", "Male"])
+            for sex_label, sex_tab in zip(["Female", "Male"], p01_tabs):
+                with sex_tab:
+                    sex_table = p01_indicator_monthly[p01_indicator_monthly["Sex"] == sex_label].copy()
+                    value_cols = [c for c in sex_table.columns if c not in ("Sex", "Age Group")]
+                    total_row: dict[str, object] = {"Age Group": "Total"}
+                    for col_name in value_cols:
+                        total_row[col_name] = int(pd.to_numeric(sex_table[col_name], errors="coerce").fillna(0).sum())
+                    sex_table = pd.concat([sex_table, pd.DataFrame([{"Sex": sex_label, **total_row}])], ignore_index=True)
+                    sex_table = sex_table.drop(columns=["Sex"])
+                    st.dataframe(sex_table, use_container_width=True)
+
     # -----------------------------
     # Activities
     # -----------------------------
@@ -1464,7 +1581,102 @@ def main():
                     "summary": activities_summary,
                     "monthly": activities_monthly,
                 }
+
     
+    # -----------------------------
+    # P01 DoS
+    # -----------------------------
+    with tab_p01_dos:
+        st.subheader("P01: Number of individual beneficiaries participating in Child Protection Services")
+        st.caption("Source: Attendance List")
+
+        p01_c1, p01_c2 = st.columns(2)
+        with p01_c1:
+            p01_child_id_col = pick_col_with_default(
+                attendance_df,
+                "Child ID column (C)",
+                "Child ID",
+                key=f"p01_child_id__{attendance_sheet}",
+            )
+            p01_program_col = pick_col_with_default(
+                attendance_df,
+                "Program column (R)",
+                "Program",
+                key=f"p01_program__{attendance_sheet}",
+            )
+            p01_date_col = pick_col_with_default(
+                attendance_df,
+                "Date of attendance column (J)",
+                "Date of attendence",
+                key=f"p01_date__{attendance_sheet}",
+            )
+        with p01_c2:
+            p01_gender_col = pick_col_with_default(
+                attendance_df,
+                "Gender column (L)",
+                "Gender",
+                key=f"p01_gender__{attendance_sheet}",
+            )
+            p01_age_group_col = pick_col_with_default(
+                attendance_df,
+                "Age Group RegDate column (M)",
+                "Age Group RegDate",
+                key=f"p01_age_group__{attendance_sheet}",
+            )
+
+        p01_required_mapping = {
+            "Child ID": p01_child_id_col,
+            "Program": p01_program_col,
+            "Date of attendance": p01_date_col,
+            "Gender": p01_gender_col,
+            "Age Group RegDate": p01_age_group_col,
+        }
+        p01_missing = [label for label, col_name in p01_required_mapping.items() if _is_unmapped(col_name)]
+        if p01_missing:
+            st.warning(f"Select required columns for P01 first: {', '.join(p01_missing)}.")
+        else:
+            p01 = _p01_attendance_cached(
+                p01_child_id_col,
+                p01_program_col,
+                p01_date_col,
+                p01_gender_col,
+                p01_age_group_col,
+            )
+            p01_table = p01["table"]
+
+            p01_m1, p01_m2, p01_m3 = st.columns(3)
+            p01_m1.metric("P01 total beneficiaries", f"{int(p01['indicator_total']):,}")
+            p01_m2.metric("Unknown sex excluded", f"{int(p01['unknown_sex_count']):,}")
+            p01_m3.metric("Unknown age excluded", f"{int(p01['unknown_age_count']):,}")
+
+            sex_tabs = st.tabs(["Female", "Male"])
+            for sex_label, sex_tab in zip(["Female", "Male"], sex_tabs):
+                with sex_tab:
+                    sex_table = p01_table[p01_table["Sex"] == sex_label].copy()
+                    value_cols = [c for c in sex_table.columns if c not in ("Sex", "Age Group")]
+                    total_row: dict[str, object] = {"Age Group": "Total"}
+                    for col_name in value_cols:
+                        total_row[col_name] = int(pd.to_numeric(sex_table[col_name], errors="coerce").fillna(0).sum())
+                    sex_table = pd.concat([sex_table, pd.DataFrame([{"Sex": sex_label, **total_row}])], ignore_index=True)
+                    sex_table = sex_table.drop(columns=["Sex"])
+
+                    st.dataframe(sex_table, use_container_width=True)
+                    st.download_button(
+                        f"Download P01 {sex_label} table (CSV)",
+                        data=sex_table.to_csv(index=False).encode("utf-8"),
+                        file_name=f"p01_cp_services_{sex_label.lower()}_monthly_table.csv",
+                        mime="text/csv",
+                        key=f"dl_p01_{sex_label.lower()}_table",
+                    )
+
+            st.download_button(
+                "Download P01 full table (CSV)",
+                data=p01_table.to_csv(index=False).encode("utf-8"),
+                file_name="p01_cp_services_monthly_table.csv",
+                mime="text/csv",
+                key="dl_p01_monthly_table",
+            )
+
     # -----------------------------
     # Structured
     # -----------------------------

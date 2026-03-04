@@ -1190,6 +1190,167 @@ def activities_participation_monthly_core(
     return monthly_wide[["Activity", "Gender", *month_cols, "Total"]]
 
 
+def p01_cp_services_from_attendance_core(
+    df: pd.DataFrame,
+    id_col: str,
+    program_col: str,
+    date_col: str,
+    gender_col: str,
+    age_group_col: str,
+) -> dict[str, pd.DataFrame | int]:
+    program = df[program_col].astype("string").str.strip().str.casefold()
+    dt = parse_mixed_date(df[date_col])
+    child_id = df[id_col].astype("string").str.strip()
+    gender = df[gender_col].astype("string").str.strip().str.casefold()
+    age_group = df[age_group_col].astype("string").str.strip()
+
+    base = pd.DataFrame(
+        {
+            "_id": child_id,
+            "_program": program,
+            "_dt": dt,
+            "_gender": gender,
+            "_age_group": age_group,
+            "_row": range(len(df)),
+        }
+    )
+    base = base[base["_id"].notna() & base["_id"].ne("") & base["_dt"].notna()].copy()
+
+    programs_b = {
+        "team_up",
+        "heart",
+        "cyr",
+        "ismf",
+        "safe families",
+        "jswp",
+        "recreational_activity",
+        "informal_education_activity",
+        "sel",
+        "socr",
+        "gbv",
+        "la",
+    }
+
+    # Condition A: at least one EORE visit (entry = first EORE date).
+    cond_a_rows = base[base["_program"] == "eore"].sort_values(["_id", "_dt", "_row"])
+    cond_a = cond_a_rows.drop_duplicates("_id", keep="first")[
+        ["_id", "_dt", "_gender", "_age_group"]
+    ].rename(
+        columns={
+            "_dt": "_entry_a",
+            "_gender": "_gender_a",
+            "_age_group": "_age_a",
+        }
+    )
+
+    # Condition B: at least two visits in programs_b (entry = second visit date).
+    cond_b_rows = base[base["_program"].isin(programs_b)].sort_values(["_id", "_dt", "_row"]).copy()
+    cond_b_rows["_visit_n"] = cond_b_rows.groupby("_id").cumcount() + 1
+    cond_b = cond_b_rows[cond_b_rows["_visit_n"] == 2][
+        ["_id", "_dt", "_gender", "_age_group"]
+    ].rename(
+        columns={
+            "_dt": "_entry_b",
+            "_gender": "_gender_b",
+            "_age_group": "_age_b",
+        }
+    )
+
+    # Final rule (cascade):
+    # 1) All IDs with EORE are counted by condition A only.
+    # 2) Condition B is evaluated only for IDs without EORE.
+    selected_a = cond_a.rename(
+        columns={
+            "_entry_a": "_entry_date",
+            "_gender_a": "_gender",
+            "_age_a": "_age_group",
+        }
+    )[["_id", "_entry_date", "_gender", "_age_group"]]
+
+    ids_with_a = set(selected_a["_id"].astype("string").tolist())
+    selected_b = cond_b[~cond_b["_id"].astype("string").isin(ids_with_a)].rename(
+        columns={
+            "_entry_b": "_entry_date",
+            "_gender_b": "_gender",
+            "_age_b": "_age_group",
+        }
+    )[["_id", "_entry_date", "_gender", "_age_group"]]
+
+    merged = pd.concat([selected_a, selected_b], ignore_index=True)
+
+    def normalize_sex(value: object) -> str:
+        text = str(value).strip().casefold()
+        if text in {"girl", "female"}:
+            return "Female"
+        if text in {"boy", "male"}:
+            return "Male"
+        return "Unknown"
+
+    age_order = [
+        "0-59 months",
+        "5-9 years",
+        "10-14 years",
+        "15-17 years",
+        "18-29 years",
+        "30-59 years",
+        "60 years and older",
+    ]
+    age_norm_map = {a.casefold(): a for a in age_order}
+
+    merged["Sex"] = merged["_gender"].apply(normalize_sex)
+    merged["Age Group"] = (
+        merged["_age_group"]
+        .astype("string")
+        .str.strip()
+        .str.casefold()
+        .map(age_norm_map)
+    )
+    merged["Age Group"] = merged["Age Group"].fillna("Unknown")
+    merged["Month"] = pd.to_datetime(merged["_entry_date"]).dt.to_period("M").astype(str)
+
+    by_sa_month = (
+        merged[merged["Sex"].isin(["Female", "Male"])].groupby(["Sex", "Age Group", "Month"]).size().reset_index(name="Count")
+    )
+    pivot = (
+        by_sa_month.pivot_table(
+            index=["Sex", "Age Group"],
+            columns="Month",
+            values="Count",
+            aggfunc="sum",
+            fill_value=0,
+        )
+        .astype(int)
+        .reset_index()
+    )
+
+    idx_rows = [(sex, age) for sex in ("Female", "Male") for age in age_order]
+    idx_df = pd.DataFrame(idx_rows, columns=["Sex", "Age Group"])
+    table = idx_df.merge(pivot, on=["Sex", "Age Group"], how="left").fillna(0)
+
+    month_cols = sorted([c for c in table.columns if c not in ("Sex", "Age Group")])
+    for c in month_cols:
+        table[c] = table[c].astype(int)
+
+    table["Total"] = table[month_cols].sum(axis=1) if month_cols else 0
+
+    total_row: dict[str, object] = {"Sex": "Total", "Age Group": ""}
+    for c in month_cols:
+        total_row[c] = int(table[c].sum())
+    total_row["Total"] = int(table["Total"].sum())
+    table = pd.concat([table, pd.DataFrame([total_row])], ignore_index=True)
+
+    indicator_total = int(len(merged))
+    unknown_sex_count = int((merged["Sex"] == "Unknown").sum())
+    unknown_age_count = int((merged["Age Group"] == "Unknown").sum())
+
+    return {
+        "table": table[["Sex", "Age Group", *month_cols, "Total"]],
+        "indicator_total": indicator_total,
+        "unknown_sex_count": unknown_sex_count,
+        "unknown_age_count": unknown_age_count,
+    }
+
+
 def safe_families_monthly_gender_core(
     df: pd.DataFrame,
     use_id: bool,

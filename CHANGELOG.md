@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file.
 
 ### Added
 - Started on 2026-03-03: implementation of a dedicated `Activities` tab for activity display and counting.
+- Added separate `P01 DoS` tab with monthly P01 table from `Attendance List`.
+- Added P01 metric banner in `Indicators`:
+  - `P01: Number of individual beneficiaries participating in Child Protection Services`.
+- Added P01 as item `4)` in `Indicator Monthly` by duplicating the P01 monthly table output.
 - Added `Indicator Monthly` tab (right after `Indicators`) with monthly breakdown tables for all 3 headline indicators.
 - Added `Activities` tab based on `Attendance List` sheet with strict Child-ID counting for:
   - `Recreational activities (static)` (`program = recreational_activity` + `Mobile or CFS = CFS`)
@@ -33,12 +37,21 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 - Updated app title from `MEAL Counter Tool v1` to `MEAL Counter Tool v2`.
+- Changed P01 logic to cascade mode:
+  - apply condition A (`EORE >= 1`) first,
+  - apply condition B (`>=2` non-EORE visits) only for IDs without EORE.
+- Updated P01 table display to split by sex into subtabs:
+  - `Female`
+  - `Male`.
+- Reordered tabs so `Activities` is directly after `Data Quality`.
 - Standardized many column selectors to `pick_col_with_default(...)` and unified empty-selection policy.
 - Improved fallback behavior: if default column is not found, selectors now use explicit empty option instead of silently picking first column.
 - Changed adult Youth Resilience default mapping target to `Unstructured MHPSS Activities Youth Resilience` (with fallback compatibility).
 - Reworded structured indicator labels to reflect current implemented scope (children).
 
 ### Fixed
+- Fixed false mapping resets on theme switch by using content-based file signature (`len + md5`) instead of including filename.
+- Fixed duplicate Streamlit widget keys by separating `Activities` and `P01 DoS` mapping keys (`act_*` vs `p01_*`).
 - Fixed Streamlit session-state warning in structured tab caused by selectbox `index` + explicit state assignment conflict.
 - Fixed adults not appearing in CP monthly totals in `Indicator Monthly` by including unknown-gender counts in `total`.
 - Fixed repeated heavy calculations across tabs by introducing per-rerun memoization wrappers in `app.py`.
