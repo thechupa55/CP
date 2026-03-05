@@ -44,6 +44,18 @@ Update lockfile after dependency changes:
 - If your default `python` points to another version, use full path to Python 3.12.
 - The app opens in browser at `http://localhost:8501`.
 
+## P01 Logic (Attendance List)
+
+- P01 counts each `Child ID` only once.
+- A child is qualified by either:
+  - first `EORE` visit, or
+  - second visit in CP programs:
+    `team_up`, `heart`, `cyr`, `ismf`, `safe families`, `jswp`,
+    `recreational_activity`, `informal_education_activity`, `sel`,
+    `socr`, `gbv`, `la`.
+- If both conditions are met for the same child, the earliest qualifying date is used.
+- Rows without `Child ID` or valid attendance date are excluded.
+
 ## Versioning
 
 - This project uses `Semantic Versioning` (`MAJOR.MINOR.PATCH`).

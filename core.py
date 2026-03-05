@@ -1237,9 +1237,9 @@ def p01_cp_services_from_attendance_core(
         ["_id", "_dt", "_gender", "_age_group"]
     ].rename(
         columns={
-            "_dt": "_entry_a",
-            "_gender": "_gender_a",
-            "_age_group": "_age_a",
+            "_dt": "_entry_date",
+            "_gender": "_gender",
+            "_age_group": "_age_group",
         }
     )
 
@@ -1250,33 +1250,27 @@ def p01_cp_services_from_attendance_core(
         ["_id", "_dt", "_gender", "_age_group"]
     ].rename(
         columns={
-            "_dt": "_entry_b",
-            "_gender": "_gender_b",
-            "_age_group": "_age_b",
+            "_dt": "_entry_date",
+            "_gender": "_gender",
+            "_age_group": "_age_group",
         }
     )
 
-    # Final rule (cascade):
-    # 1) All IDs with EORE are counted by condition A only.
-    # 2) Condition B is evaluated only for IDs without EORE.
-    selected_a = cond_a.rename(
-        columns={
-            "_entry_a": "_entry_date",
-            "_gender_a": "_gender",
-            "_age_a": "_age_group",
-        }
-    )[["_id", "_entry_date", "_gender", "_age_group"]]
-
-    ids_with_a = set(selected_a["_id"].astype("string").tolist())
-    selected_b = cond_b[~cond_b["_id"].astype("string").isin(ids_with_a)].rename(
-        columns={
-            "_entry_b": "_entry_date",
-            "_gender_b": "_gender",
-            "_age_b": "_age_group",
-        }
-    )[["_id", "_entry_date", "_gender", "_age_group"]]
-
-    merged = pd.concat([selected_a, selected_b], ignore_index=True)
+    # Final rule:
+    # Count each child once using the earliest qualifying entry date between:
+    # A) first EORE date, B) second visit date in programs_b.
+    # If dates are equal, keep condition A for deterministic behavior.
+    selected_a = cond_a[["_id", "_entry_date", "_gender", "_age_group"]].copy()
+    selected_a["_priority"] = 0
+    selected_b = cond_b[["_id", "_entry_date", "_gender", "_age_group"]].copy()
+    selected_b["_priority"] = 1
+    merged = (
+        pd.concat([selected_a, selected_b], ignore_index=True)
+        .sort_values(["_id", "_entry_date", "_priority"])
+        .drop_duplicates("_id", keep="first")
+        .drop(columns=["_priority"])
+        .reset_index(drop=True)
+    )
 
     def normalize_sex(value: object) -> str:
         text = str(value).strip().casefold()

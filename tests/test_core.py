@@ -236,7 +236,7 @@ def test_p01_cp_services_from_attendance_core_conditions_and_totals():
     assert int(total_row["Total"]) == 4
 
 
-def test_p01_cascade_logic_uses_b_only_for_ids_without_eore():
+def test_p01_prefers_earliest_qualifying_date_between_b_and_eore():
     df = pd.DataFrame(
         {
             "child_id": ["10", "10", "10"],
@@ -258,7 +258,8 @@ def test_p01_cascade_logic_uses_b_only_for_ids_without_eore():
     table = result["table"]
 
     assert int(result["indicator_total"]) == 1
-    # With cascade logic, this ID is counted by condition A (EORE), so month must be 2025-02.
+    # This ID qualifies by B on 2025-01-05 and by A on 2025-02-10.
+    # Entry month must be the earliest qualifying month (2025-01).
     male_15_17 = table[(table["Sex"] == "Male") & (table["Age Group"] == "15-17 years")].iloc[0]
-    assert int(male_15_17.get("2025-01", 0)) == 0
-    assert int(male_15_17.get("2025-02", 0)) == 1
+    assert int(male_15_17.get("2025-01", 0)) == 1
+    assert int(male_15_17.get("2025-02", 0)) == 0

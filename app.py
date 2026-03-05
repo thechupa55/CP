@@ -874,10 +874,10 @@ def main():
             "Indicators",
             "Indicator Monthly",
             "P01 DoS",
-            "CP Services Indicator",
-            "Structured",
+            "CP Services",
+            "structured MHPSS programs",
             "Structured Monthly",
-            "Safe Families Monthly",
+            "Safe Families",
             "Geography",
             "Disability",
             "Status IDP",
@@ -1589,6 +1589,13 @@ def main():
     with tab_p01_dos:
         st.subheader("P01: Number of individual beneficiaries participating in Child Protection Services")
         st.caption("Source: Attendance List")
+        st.info(
+            "P01 logic (simple): count each Child ID once by the earliest qualifying date. "
+            "A child qualifies either by first EORE visit, or by second visit in CP programs "
+            "(team_up, heart, cyr, ismf, safe families, jswp, recreational_activity, "
+            "informal_education_activity, sel, socr, gbv, la). "
+            "If both conditions are met, the earlier date is used."
+        )
 
         p01_c1, p01_c2 = st.columns(2)
         with p01_c1:
@@ -2229,10 +2236,23 @@ def main():
             )
         with cpm2:
             cp_monthly_gender_view = _cp_filter_by_month(cp_monthly["monthly_by_gender_pivot"])
-            st.dataframe(cp_monthly_gender_view, use_container_width=True)
+            if cp_monthly_gender_view.empty:
+                cp_monthly_gender_view_t = pd.DataFrame(columns=["Gender", "Total"])
+            else:
+                month_gender_base = cp_monthly_gender_view.set_index("Month")
+                gender_rows = ["girl", "boy"]
+                if "unknown" in month_gender_base.columns and int(month_gender_base["unknown"].sum()) > 0:
+                    gender_rows.append("unknown")
+                cp_monthly_gender_view_t = month_gender_base[gender_rows].T
+                cp_monthly_gender_view_t.index.name = "Gender"
+                cp_monthly_gender_view_t["Total"] = cp_monthly_gender_view_t.sum(axis=1)
+                cp_monthly_gender_view_t.loc["Total"] = cp_monthly_gender_view_t.sum(axis=0)
+                cp_monthly_gender_view_t = cp_monthly_gender_view_t.reset_index()
+
+            st.dataframe(cp_monthly_gender_view_t, use_container_width=True)
             st.download_button(
                 "Download CP indicator monthly by gender (CSV)",
-                data=cp_monthly_gender_view.to_csv(index=False).encode("utf-8"),
+                data=cp_monthly_gender_view_t.to_csv(index=False).encode("utf-8"),
                 file_name=f"cp_indicator_monthly_by_gender_{cp_month_suffix}.csv",
                 mime="text/csv",
                 key="dl_cp_monthly_gender",
@@ -3088,11 +3108,11 @@ def main():
         idp_cached = st.session_state.get("idp_cached")
     
         if not structured_cached:
-            st.warning("Open the 'Structured' tab once to generate structured tables for the Excel report.")
+            st.warning("Open the 'structured MHPSS programs' tab once to generate structured tables for the Excel report.")
         if not sf_cached:
-            st.info("If you want Safe Families tables included in the Excel report, open 'Safe Families Monthly' tab once.")
+            st.info("If you want Safe Families tables included in the Excel report, open 'Safe Families' tab once.")
         if not sf_adult_cached:
-            st.info("If you want Adult Safe Families tables included in the Excel report, open 'Safe Families Monthly' tab once.")
+            st.info("If you want Adult Safe Families tables included in the Excel report, open 'Safe Families' tab once.")
         if not activities_cached:
             st.info("If you want Activities tables included in the Excel report, open 'Activities' tab once.")
         if not geo_cached:

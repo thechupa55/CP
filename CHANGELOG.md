@@ -34,12 +34,18 @@ All notable changes to this project are documented in this file.
 - Added lint/typecheck commands to README and added tools to dependencies:
   - `ruff`
   - `mypy`.
+- Added P01 logic hint in `P01 DoS` tab and documented the same rule in `README.md`.
 
 ### Changed
 - Updated app title from `MEAL Counter Tool v1` to `MEAL Counter Tool v2`.
 - Changed P01 logic to cascade mode:
-  - apply condition A (`EORE >= 1`) first,
-  - apply condition B (`>=2` non-EORE visits) only for IDs without EORE.
+  - choose the earliest qualifying date between:
+    - condition A (`EORE >= 1`, first EORE date),
+    - condition B (`>=2` visits in CP programs, second-visit date).
+- Renamed tabs for clearer navigation:
+  - `CP Services Indicator` -> `CP Services`
+  - `Structured` -> `structured MHPSS programs`
+  - `Safe Families Monthly` -> `Safe Families`
 - Updated P01 table display to split by sex into subtabs:
   - `Female`
   - `Male`.
